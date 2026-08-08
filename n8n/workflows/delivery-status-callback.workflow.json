@@ -1,0 +1,114 @@
+{
+  "id": "delivery-status-callback",
+  "name": "NBA Delivery Status Callback",
+  "nodes": [
+    {
+      "id": "dlr-webhook",
+      "name": "Sendchamp DLR Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        260
+      ],
+      "notes": "UNVERIFIED: Sendchamp's delivery-status-callback (DLR) payload shape was not found in the publicly surveyed docs. This node and the parsing below are best-effort scaffolding \u2014 register this webhook URL in your Sendchamp dashboard once you have a live account, capture a real payload, and correct the field mapping in 'Normalize DLR Payload' accordingly.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sendchamp-dlr",
+        "responseMode": "responseNode",
+        "authentication": "none",
+        "options": {}
+      }
+    },
+    {
+      "id": "normalize-dlr",
+      "name": "Normalize DLR Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        40,
+        260
+      ],
+      "parameters": {
+        "jsCode": "// UNVERIFIED: field names below (message_id / status / delivered) are a\n// best guess pending a real Sendchamp DLR payload to inspect. Update once\n// verified against a live webhook delivery.\nconst body = $json.body ?? $json;\nconst providerMessageId = body.message_id ?? body.data?.id ?? body.id ?? null;\nconst rawStatus = (body.status ?? body.data?.status ?? '').toString().toLowerCase();\n\nlet status = 'sent';\nif (['delivered', 'success'].includes(rawStatus)) status = 'delivered';\nif (['failed', 'undelivered', 'error'].includes(rawStatus)) status = 'failed';\n\nreturn [{ json: { provider_message_id: providerMessageId, status } }];"
+      }
+    },
+    {
+      "id": "update-message-log",
+      "name": "Update Message Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        280,
+        260
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE message_log SET status = $2, updated_at = now() WHERE provider_message_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$json.provider_message_id, $json.status] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "NBA Postgres (App DB)"
+        }
+      }
+    },
+    {
+      "id": "respond-dlr",
+      "name": "Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        260
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"received\": true } }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Sendchamp DLR Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize DLR Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize DLR Payload": {
+      "main": [
+        [
+          {
+            "node": "Update Message Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Message Log": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

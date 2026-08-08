@@ -1,0 +1,93 @@
+volumes:
+  db_storage:
+  n8n_storage:
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - db_storage:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  db-migrate:
+    image: postgres:16
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./db:/db:ro
+    environment:
+      - PGHOST=postgres
+      - PGUSER=${POSTGRES_USER}
+      - PGPASSWORD=${POSTGRES_PASSWORD}
+      - PGDATABASE=${APP_DB_NAME}
+    entrypoint: ["/bin/bash", "/db/migrate.sh"]
+    restart: "no"
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PROTOCOL=${N8N_PROTOCOL}
+      - N8N_WEBHOOK_URL=${WEBHOOK_URL}
+      # Some container network namespaces (this repo's own test sandbox
+      # included) don't have IPv6, and n8n's default '::' listen address
+      # fails to bind there. Force IPv4 explicitly for portability.
+      - N8N_LISTEN_ADDRESS=0.0.0.0
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
+      # Available to Code/HTTP Request nodes in the workflow via $env.*
+      - DATA_SOURCE=${DATA_SOURCE:-postgres}
+      - APP_DB_NAME=${APP_DB_NAME}
+      - BROADCAST_BATCH_SIZE=${BROADCAST_BATCH_SIZE:-50}
+      - BROADCAST_BATCH_DELAY_SECONDS=${BROADCAST_BATCH_DELAY_SECONDS:-2}
+      - SENDCHAMP_API_KEY=${SENDCHAMP_API_KEY}
+      - SENDCHAMP_API_BASE_URL=${SENDCHAMP_API_BASE_URL}
+      - SENDCHAMP_FROM_EMAIL=${SENDCHAMP_FROM_EMAIL}
+      - WHATSAPP_SENDER_NUMBER=${WHATSAPP_SENDER_NUMBER}
+      - WHATSAPP_TEMPLATE_CODE=${WHATSAPP_TEMPLATE_CODE}
+      - N8N_WEBHOOK_SECRET=${N8N_WEBHOOK_SECRET}
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - n8n_storage:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+
+  admin-gui:
+    build: ./admin-gui
+    restart: unless-stopped
+    environment:
+      - N8N_WEBHOOK_BASE=${N8N_WEBHOOK_BASE:-http://n8n:5678/webhook}
+      - N8N_WEBHOOK_SECRET=${N8N_WEBHOOK_SECRET}
+      - ADMIN_GUI_USER=${ADMIN_GUI_USER}
+      - ADMIN_GUI_PASSWORD=${ADMIN_GUI_PASSWORD}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - DEFAULT_BRANCH_SLUG=${DEFAULT_BRANCH_SLUG:-ado-ekiti}
+      - PORT=3000
+    ports:
+      - "${ADMIN_GUI_PORT:-3000}:3000"
+    depends_on:
+      - n8n

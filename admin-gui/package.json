@@ -1,0 +1,14 @@
+{
+  "name": "nba-send-admin-gui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hosted broadcast composer for NBA branch executives (PRO, Chairman, Secretariat).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "express-session": "^1.18.0"
+  }
+}

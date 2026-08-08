@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NBA Ado-Ekiti — Broadcast Composer</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>NBA Ado-Ekiti Branch</h1>
+    <p class="subtitle">Omnichannel Broadcast Composer</p>
+    <button id="logoutBtn" class="link-btn hidden" type="button">Log out</button>
+  </header>
+
+  <main>
+    <section id="loginSection">
+      <form id="loginForm">
+        <h2>Sign in</h2>
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" autocomplete="username" required />
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+
+        <button type="submit">Sign in</button>
+        <p id="loginError" class="error hidden"></p>
+      </form>
+    </section>
+
+    <section id="broadcastSection" class="hidden">
+      <form id="broadcastForm">
+        <h2>Compose a broadcast</h2>
+
+        <label for="senderProfile">1. Sender Profile</label>
+        <select id="senderProfile" required>
+          <option value="" disabled selected>Loading…</option>
+        </select>
+
+        <label for="audienceSegment">2. Target Audience</label>
+        <select id="audienceSegment" required>
+          <option value="all_members">All Members</option>
+          <option value="executive_committee">Executive Committee Only</option>
+          <option value="financial_members">Financial Members Only</option>
+        </select>
+
+        <fieldset>
+          <legend>3. Delivery Channel</legend>
+          <label class="checkbox-label"><input type="checkbox" name="channel" value="email" checked /> Email</label>
+          <label class="checkbox-label"><input type="checkbox" name="channel" value="whatsapp" /> WhatsApp</label>
+          <label class="checkbox-label"><input type="checkbox" name="channel" value="sms" /> SMS</label>
+        </fieldset>
+
+        <label class="checkbox-label urgent-label">
+          <input type="checkbox" id="isUrgent" />
+          Urgent legal/emergency notice (bypasses SMS DND opt-outs)
+        </label>
+
+        <label for="messageTemplate">4. Message Composer</label>
+        <div class="token-row">
+          <span>Insert:</span>
+          <button type="button" class="token-btn" data-token="{First_Name}">{First_Name}</button>
+          <button type="button" class="token-btn" data-token="{Amount_Due}">{Amount_Due}</button>
+          <button type="button" class="token-btn" data-token="{Sender_Profile}">{Sender_Profile}</button>
+        </div>
+        <textarea id="messageTemplate" rows="8" required
+          placeholder="Dear {First_Name}, ...">Dear {First_Name},
+
+Please be reminded that your outstanding due is {Amount_Due}.
+
+Regards,
+{Sender_Profile}</textarea>
+
+        <div class="preview">
+          <h3>Preview (sample values — actual personalization happens per-member on send)</h3>
+          <pre id="previewOutput"></pre>
+        </div>
+
+        <button type="submit" id="broadcastBtn">Broadcast</button>
+        <p id="broadcastResult" class="hidden"></p>
+      </form>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

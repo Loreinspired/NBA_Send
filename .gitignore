@@ -1,0 +1,7 @@
+.env
+admin-gui/.env
+node_modules/
+admin-gui/node_modules/
+*.log
+.DS_Store
+.claude/settings.local.json

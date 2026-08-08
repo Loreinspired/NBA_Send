@@ -1,0 +1,224 @@
+{
+  "id": "whatsapp-interactive-reply",
+  "name": "NBA WhatsApp Interactive Reply",
+  "nodes": [
+    {
+      "id": "reply-webhook",
+      "name": "WhatsApp Reply Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        260
+      ],
+      "notes": "UNVERIFIED, fuller placeholder: this entire workflow captures RSVP/payment quick-reply button taps, but every field name below is inferred from Sendchamp's public WhatsApp docs and the underlying Meta Cloud API's typical interactive-reply shape, not confirmed against a live payload. Some WhatsApp Business Platform integrations also require a one-time GET verification handshake (hub.challenge echo) before POST events start flowing \u2014 if Sendchamp's webhook subscription needs that, add a second Webhook node (GET, same path) that returns the 'hub.challenge' query param verbatim. Register this URL as the WhatsApp inbound webhook in your Sendchamp dashboard once live, capture one real payload, and correct 'Parse Interactive Reply' before relying on this in production.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-reply",
+        "responseMode": "responseNode",
+        "authentication": "none",
+        "options": {}
+      }
+    },
+    {
+      "id": "parse-interactive-reply",
+      "name": "Parse Interactive Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        40,
+        260
+      ],
+      "parameters": {
+        "jsCode": "// UNVERIFIED: best-guess extraction pending a real Sendchamp/WABA payload.\n// Meta Cloud API interactive-reply webhooks typically nest the button tap\n// under entry[].changes[].value.messages[].interactive.button_reply, with\n// the sender's number at messages[].from and (for replies) the original\n// outbound message id echoed back at messages[].context.id. Sendchamp may\n// pass this through directly or reshape it \u2014 adjust the paths below once\n// a real payload is captured.\nconst body = $json.body ?? $json;\n\nconst waMessage =\n  body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0] // Meta Cloud API shape, if passed through as-is\n  ?? body?.data?.message // plausible Sendchamp-flattened shape\n  ?? body;\n\nconst fromPhoneRaw = waMessage?.from ?? body?.phone_number ?? body?.sender ?? null;\n// Normalize to the +234E.164 format stored in members.phone_number.\nconst fromPhone = fromPhoneRaw\n  ? (fromPhoneRaw.startsWith('+') ? fromPhoneRaw : `+${fromPhoneRaw.replace(/^0/, '234')}`)\n  : null;\n\nconst buttonReply = waMessage?.interactive?.button_reply ?? waMessage?.button ?? null;\nconst buttonId = buttonReply?.id ?? buttonReply?.payload ?? null;\nconst buttonText = buttonReply?.title ?? buttonReply?.text ?? null;\nconst contextMessageId = waMessage?.context?.id ?? body?.context_id ?? null;\n\nreturn [{\n  json: {\n    from_phone: fromPhone,\n    context_message_id: contextMessageId,\n    button_id: buttonId,\n    button_text: buttonText,\n    raw_payload: JSON.stringify(body),\n  },\n}];"
+      }
+    },
+    {
+      "id": "find-matching-message",
+      "name": "Find Matching Message Log Row",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        280,
+        260
+      ],
+      "notes": "Matches by the echoed original message id when the provider supplies one (most reliable); otherwise falls back to the most recent sent/delivered WhatsApp message to that phone number.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id AS message_log_id, broadcast_id, member_id, branch_id\nFROM message_log\nWHERE channel = 'whatsapp'\n  AND (\n    ($1 IS NOT NULL AND provider_message_id = $1)\n    OR ($1 IS NULL AND recipient_address = $2 AND status IN ('sent', 'delivered'))\n  )\nORDER BY sent_at DESC NULLS LAST\nLIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [$json.context_message_id, $json.from_phone] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "NBA Postgres (App DB)"
+        }
+      }
+    },
+    {
+      "id": "interpret-reply",
+      "name": "Interpret Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        260
+      ],
+      "notes": "UNVERIFIED: button_id conventions (e.g. 'rsvp_yes' / 'rsvp_no' / 'payment_confirm') assume the WhatsApp template was built with those ids \u2014 must match whatever ids are actually configured on the approved template once one exists.",
+      "parameters": {
+        "jsCode": "const match = $('Find Matching Message Log Row').first()?.json;\nconst reply = $('Parse Interactive Reply').first().json;\n\nif (!match || !match.message_log_id) {\n  return [{\n    json: { matched: false, reason: 'No matching outbound WhatsApp message found for this reply', ...reply },\n  }];\n}\n\nconst id = (reply.button_id || '').toLowerCase();\nlet interpreted_reply = 'unrecognized';\nif (id.includes('rsvp_yes') || id.includes('accept')) interpreted_reply = 'rsvp_yes';\nelse if (id.includes('rsvp_no') || id.includes('decline')) interpreted_reply = 'rsvp_no';\nelse if (id.includes('payment') || id.includes('paid')) interpreted_reply = 'payment_confirmed';\n\nreturn [{\n  json: {\n    matched: true,\n    message_log_id: match.message_log_id,\n    broadcast_id: match.broadcast_id,\n    member_id: match.member_id,\n    interpreted_reply,\n    reply_payload: reply.button_text || reply.button_id || reply.raw_payload,\n  },\n}];"
+      }
+    },
+    {
+      "id": "update-reply-if-matched",
+      "name": "Matched?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        760,
+        260
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.matched}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "update-message-log-reply",
+      "name": "Update Message Log Reply",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1000,
+        160
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE message_log SET reply_payload = $2, replied_at = now() WHERE id = $1::uuid;",
+        "options": {
+          "queryReplacement": "={{ [$json.message_log_id, $json.interpreted_reply + ': ' + ($json.reply_payload ?? '')] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "NBA Postgres (App DB)"
+        }
+      }
+    },
+    {
+      "id": "respond-reply-ack",
+      "name": "Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1240,
+        260
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"received\": true } }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "WhatsApp Reply Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Interactive Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Interactive Reply": {
+      "main": [
+        [
+          {
+            "node": "Find Matching Message Log Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Matching Message Log Row": {
+      "main": [
+        [
+          {
+            "node": "Interpret Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpret Reply": {
+      "main": [
+        [
+          {
+            "node": "Matched?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Matched?": {
+      "main": [
+        [
+          {
+            "node": "Update Message Log Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Message Log Reply": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

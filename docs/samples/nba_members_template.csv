@@ -1,0 +1,4 @@
+First_Name,Last_Name,Email,Phone_Number,Financial_Status
+Tunde,Bakare,tunde.bakare@example.com,+2348011111101,financial
+Chidinma,Okoro,chidinma.okoro@example.com,+2348011111104,non_financial
+Folake,Ogundipe,folake.ogundipe@example.com,+2348011111106,unknown

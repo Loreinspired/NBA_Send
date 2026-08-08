@@ -1,0 +1,48 @@
+# Overlay for Option B (VPS deployment). Use together with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Not used for Option A (Render/Railway) — those platforms terminate TLS and
+# reverse-proxy for you. See docs/DEPLOYMENT.md.
+volumes:
+  certbot_conf:
+  certbot_www:
+
+services:
+  # Base compose exposes n8n/admin-gui directly on host ports for local dev;
+  # in production Nginx is the only public entry point.
+  n8n:
+    ports: []
+    expose:
+      - "5678"
+
+  admin-gui:
+    ports: []
+    expose:
+      - "3000"
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    environment:
+      - N8N_HOST=${N8N_HOST}
+      - ADMIN_GUI_HOST=${ADMIN_GUI_HOST}
+    depends_on:
+      - n8n
+      - admin-gui
+
+  certbot:
+    image: certbot/certbot
+    restart: "no"
+    volumes:
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    entrypoint: >
+      certonly --webroot -w /var/www/certbot
+      --email ${LETSENCRYPT_EMAIL} --agree-tos --no-eff-email
+      -d ${N8N_HOST} -d ${ADMIN_GUI_HOST}

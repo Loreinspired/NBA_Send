@@ -1,0 +1,120 @@
+{
+  "id": "sender-profiles-lookup",
+  "name": "NBA Sender Profiles - Lookup",
+  "nodes": [
+    {
+      "id": "lookup-trigger",
+      "name": "Lookup Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        260
+      ],
+      "notes": "GET /webhook/sender-profiles?branch_slug=ado-ekiti. Backs the admin GUI's Sender Profile dropdown (admin-gui/public/app.js).",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "sender-profiles",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Admin GUI Webhook Secret"
+        }
+      }
+    },
+    {
+      "id": "fetch-profiles",
+      "name": "Fetch Sender Profiles",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        40,
+        260
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT sp.role, sp.display_name\nFROM sender_profiles sp\nJOIN branches b ON b.id = sp.branch_id\nWHERE b.slug = $1 AND sp.is_active = true\nORDER BY sp.role;",
+        "options": {
+          "queryReplacement": "={{ [$json.query.branch_slug] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "NBA Postgres (App DB)"
+        }
+      }
+    },
+    {
+      "id": "aggregate-profiles",
+      "name": "Aggregate to Array",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        260
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { sender_profiles: $input.all().map((i) => i.json) } }];"
+      }
+    },
+    {
+      "id": "respond-profiles",
+      "name": "Respond with Profiles",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        260
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Lookup Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Sender Profiles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Sender Profiles": {
+      "main": [
+        [
+          {
+            "node": "Aggregate to Array",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate to Array": {
+      "main": [
+        [
+          {
+            "node": "Respond with Profiles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
