@@ -13,7 +13,8 @@ the full design and the reasoning behind it.
 - **n8n** (Community Edition, self-hosted) — owns all routing/personalization logic
 - **Postgres** — member roster, sender profiles, broadcast + delivery audit trail (multi-tenant via Row-Level Security)
 - **admin-gui** — small self-hosted Express + vanilla JS broadcast composer
-- **Sendchamp** — Email / WhatsApp / SMS delivery, chosen for Nigerian-infrastructure routing (DND bypass, local SMS, WhatsApp Business API)
+- **Brevo** — Email + WhatsApp delivery (free tier: 300 emails/day, no card required)
+- **Multitexter** — Nigerian bulk SMS delivery, with DND-bypass for urgent legal/emergency notices
 
 ## Quickstart (local)
 
@@ -21,8 +22,9 @@ Requires Docker and Docker Compose.
 
 ```bash
 cp .env.example .env
-# edit .env — the defaults work for local testing as-is except SENDCHAMP_API_KEY,
-# which can stay blank until you have real credentials (see docs/SENDCHAMP_SETUP.md)
+# edit .env — the defaults work for local testing as-is except BREVO_API_KEY /
+# MULTITEXTER_EMAIL+PASSWORD, which can stay blank until you have real
+# credentials (see docs/PROVIDERS_SETUP.md)
 
 docker compose up
 ```
@@ -35,7 +37,7 @@ data), and starts n8n and the admin GUI.
 3. Import each file in `n8n/workflows/` (**Workflows → Import from File**), in the order listed in `n8n/README.md`.
 4. Create the credentials listed in `n8n/credentials/README.md` and link them to the nodes that need them, then publish each workflow so its production webhook goes live (n8n's terminology and exact toggle/button varies by version — n8n 2.x uses an explicit **Publish** button distinct from Save; older 1.x releases use an **Active** toggle). Confirm the webhook actually responds with a test `curl` before wiring up the admin GUI — see `n8n/README.md`'s note on this.
 5. Open the admin GUI at **http://localhost:3000**, sign in with `ADMIN_GUI_USER`/`ADMIN_GUI_PASSWORD` from `.env`, and compose a test broadcast against the seeded `ado-ekiti` branch data.
-6. Watch the execution in n8n's **Executions** tab — with no real `SENDCHAMP_API_KEY` set, the workflow runs through validation, personalization, and DND-route selection and gets as far as building the Sendchamp request (which will fail at the actual HTTP call) — that's expected in local dev. See "What's tested vs. not" below.
+6. Watch the execution in n8n's **Executions** tab — with no real `BREVO_API_KEY`/`MULTITEXTER_EMAIL`+`PASSWORD` set, the workflow runs through validation, personalization, and DND-route selection and gets as far as building the Brevo/Multitexter request (which will fail at the actual HTTP call) — that's expected in local dev. See "What's tested vs. not" below.
 
 ## Repository layout
 
@@ -44,7 +46,7 @@ db/           SQL migrations + seed data + migration runner
 n8n/          Hand-authored n8n workflow JSON + credential/setup docs
 admin-gui/    Self-hosted broadcast composer (Express + vanilla JS)
 docker/nginx/ Reverse proxy + TLS config, VPS deployment only
-docs/         Architecture, deployment, Sendchamp setup, Sheets→Postgres migration
+docs/         Architecture, deployment, provider setup, Sheets→Postgres migration
 scripts/      One-off operational procedures (documented, not automated)
 ```
 
@@ -72,13 +74,13 @@ workflow JSON (which independently validates and imports correctly) — see
 `n8n/README.md` for the full account and what to try if you hit it too.
 
 **Not verifiable without live third-party accounts** (documented as
-follow-up steps in the relevant doc): real Sendchamp sends, WhatsApp
+follow-up steps in the relevant doc): real Brevo/Multitexter sends, WhatsApp
 template approval, Google Sheets OAuth, and Render/Railway/Supabase/Hetzner
-provisioning. See `docs/SENDCHAMP_SETUP.md` and `docs/DEPLOYMENT.md`.
+provisioning. See `docs/PROVIDERS_SETUP.md` and `docs/DEPLOYMENT.md`.
 
 ## Further reading
 
 - `docs/ARCHITECTURE.md` — system diagram and the reasoning behind the RLS multi-tenancy and custom-GUI decisions
 - `docs/DEPLOYMENT.md` — Option A (free tier: Render/Railway + Supabase) and Option B (VPS + Docker + Nginx + Let's Encrypt)
-- `docs/SENDCHAMP_SETUP.md` — credential acquisition and where each value plugs in
+- `docs/PROVIDERS_SETUP.md` — Brevo (email + WhatsApp) and Multitexter (SMS) credential acquisition and where each value plugs in
 - `docs/MIGRATION.md` — Sheets→Postgres cutover and adding new branches for National rollout

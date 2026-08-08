@@ -20,7 +20,7 @@ service, not a compose stack.
 2. **n8n service**: create a new Web Service on Render/Railway from the
    official `docker.n8n.io/n8nio/n8n` image (or point at this repo — no
    custom Dockerfile is needed for n8n itself). Set the same `DB_*`,
-   `N8N_*`, `DATA_SOURCE`, `SENDCHAMP_*`, `WHATSAPP_*` env vars as in
+   `N8N_*`, `DATA_SOURCE`, `BREVO_*`, `MULTITEXTER_*` env vars as in
    `.env.example`, pointing `DB_POSTGRESDB_HOST` etc at the Supabase
    connection details. Render/Railway supply `N8N_HOST`/TLS automatically —
    set `N8N_PROTOCOL=https` and `WEBHOOK_URL` to the platform-assigned

@@ -57,7 +57,7 @@ Google Sheets if `DATA_SOURCE=sheets`) → filters by audience segment →
 batches members (`BROADCAST_BATCH_SIZE`, default 50) → for each member,
 substitutes `{First_Name}`/`{Amount_Due}`/`{Sender_Profile}` and appends the
 sender's signature block → selects the DND-bypass SMS route when the
-broadcast is marked urgent → sends via Sendchamp on each selected channel →
+broadcast is marked urgent → sends via Brevo (email/WhatsApp) or Multitexter (SMS) on each selected channel →
 logs one `message_log` row per (member, channel) → paces batches with a
 short `Wait` → marks the broadcast `completed` and responds to the admin GUI.
 
@@ -85,13 +85,18 @@ rather than holding one long-lived HTTP connection.
 
 - **Google Sheets node fields** (`Fetch Members (Sheets)`) — no live Google
   account was available to confirm the exact resource/operation parameters.
-- **Sendchamp HTTP request bodies** (`Send via Sendchamp *`) and **response
-  shapes** (`Normalize Delivery Response *`) — built from Sendchamp's public
-  API docs, not a live key. Re-verify before the first real send; see
-  `../docs/SENDCHAMP_SETUP.md`.
-- **DND-bypass `route` field** (`Select SMS Route`) — confirm the exact
-  field/value your Sendchamp account uses; that route typically needs
-  separate approval.
+- **Brevo email/WhatsApp** send bodies are confirmed against Brevo's public
+  API reference; response parsing (`messageId` presence = success) is
+  likewise confirmed for the shape their docs show. WhatsApp still needs a
+  Meta-approved template and the per-message `params` shape is a guess —
+  see `../docs/PROVIDERS_SETUP.md`.
+- **Multitexter SMS** (`Send via Multitexter SMS`) request shape is
+  confirmed against their public docs; the **response shape is completely
+  undocumented** there — `Normalize Delivery Response (SMS)`'s
+  success/failure heuristic is a placeholder pending a real send.
+- **DND-bypass `forcednd` field** (`Select SMS Route`) is confirmed against
+  Multitexter's public docs (`forcednd: 1` bypasses DND, `0` doesn't) — see
+  `../docs/PROVIDERS_SETUP.md`.
 - **Delivery-status callback payload** (`delivery-status-callback.workflow.json`)
   and **WhatsApp inbound reply payload** (`whatsapp-interactive-reply.workflow.json`)
   — both are best-effort scaffolding pending a real webhook delivery to

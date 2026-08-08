@@ -4,17 +4,17 @@
   "nodes": [
     {
       "id": "dlr-webhook",
-      "name": "Sendchamp DLR Webhook",
+      "name": "Delivery Status Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
         -200,
         260
       ],
-      "notes": "UNVERIFIED: Sendchamp's delivery-status-callback (DLR) payload shape was not found in the publicly surveyed docs. This node and the parsing below are best-effort scaffolding \u2014 register this webhook URL in your Sendchamp dashboard once you have a live account, capture a real payload, and correct the field mapping in 'Normalize DLR Payload' accordingly.",
+      "notes": "Register this URL as a Transactional Webhook in Brevo's dashboard (Transactional > Settings > Webhooks), subscribed to at least 'delivered' and the bounce/error events. Confirmed against Brevo's public webhook event docs (developers.brevo.com/docs/how-to-use-webhooks) for the payload shape. Multitexter's docs don't document a delivery-status webhook at all, so SMS delivery status stays 'sent' (never flips to 'delivered'/'failed') unless Multitexter support confirms one exists.",
       "parameters": {
         "httpMethod": "POST",
-        "path": "sendchamp-dlr",
+        "path": "delivery-status",
         "responseMode": "responseNode",
         "authentication": "none",
         "options": {}
@@ -30,7 +30,7 @@
         260
       ],
       "parameters": {
-        "jsCode": "// UNVERIFIED: field names below (message_id / status / delivered) are a\n// best guess pending a real Sendchamp DLR payload to inspect. Update once\n// verified against a live webhook delivery.\nconst body = $json.body ?? $json;\nconst providerMessageId = body.message_id ?? body.data?.id ?? body.id ?? null;\nconst rawStatus = (body.status ?? body.data?.status ?? '').toString().toLowerCase();\n\nlet status = 'sent';\nif (['delivered', 'success'].includes(rawStatus)) status = 'delivered';\nif (['failed', 'undelivered', 'error'].includes(rawStatus)) status = 'failed';\n\nreturn [{ json: { provider_message_id: providerMessageId, status } }];"
+        "jsCode": "// Field names (event, message-id) confirmed against Brevo's public webhook\n// docs. UNVERIFIED: Brevo's send-email API returns a 'messageId' (e.g.\n// '<xxx@smtp-relay.brevo.com>' or similar), while the webhook event carries\n// 'message-id' — confirm these are actually the same value/format on a real\n// account before trusting the match; if they differ, fall back to matching\n// by recipient email + most recent 'sent' row instead (see the WhatsApp\n// reply workflow for that fallback pattern).\nconst body = $json.body ?? $json;\nconst providerMessageId = body['message-id'] ?? body.message_id ?? null;\nconst event = (body.event ?? '').toString().toLowerCase();\n\nlet status = 'sent';\nif (event === 'delivered') status = 'delivered';\nif (['soft_bounce', 'hard_bounce', 'invalid_email', 'blocked', 'error'].includes(event)) status = 'failed';\n\nreturn [{ json: { provider_message_id: providerMessageId, status } }];"
       }
     },
     {
@@ -73,7 +73,7 @@
     }
   ],
   "connections": {
-    "Sendchamp DLR Webhook": {
+    "Delivery Status Webhook": {
       "main": [
         [
           {

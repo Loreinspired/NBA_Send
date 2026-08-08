@@ -16,20 +16,23 @@
       │        (Phase 1)            (Phase 2+, tested here)
       │  filters by audience segment, batches, personalizes
       ▼
- [ Sendchamp API ]
-      ├──► Email endpoint    (newsletters, minutes, notices)
-      ├──► WhatsApp endpoint (interactive RSVP / payment templates)
-      └──► SMS endpoint      (DND-bypass route for urgent notices)
+ [ Brevo API ]              [ Multitexter API ]
+      ├──► Email endpoint          └──► SMS endpoint (DND-bypass via forcednd)
+      └──► WhatsApp endpoint            (urgent legal/emergency notices)
+           (interactive RSVP / payment templates)
                   │
                   ▼
  [ Postgres message_log ]  ← per-member, per-channel delivery audit trail
 ```
 
-Everything left of Sendchamp is self-hosted and version-controlled in this
-repo. Sendchamp is the one external paid dependency, chosen by the client
-brief specifically for Nigerian-infrastructure-optimized routing (DND
-bypass, WhatsApp Business API, local SMS delivery) — building that layer
-in-house was explicitly out of scope.
+Everything left of the Brevo/Multitexter boxes is self-hosted and
+version-controlled in this repo. Those two are the external paid/free-tier
+dependencies — Brevo (free tier, email + WhatsApp) and Multitexter
+(Nigerian SMS with DND-bypass routing) — chosen over building that delivery
+layer in-house, which was explicitly out of scope. (The original brief
+specified Sendchamp as a single provider for all three channels; this repo
+was later switched to Brevo + Multitexter — see `docs/PROVIDERS_SETUP.md`
+for why and how.)
 
 ## Why row-level multi-tenancy, not schema-per-branch
 
@@ -87,7 +90,7 @@ doesn't touch the RLS-protected broadcast path.
 
 See `n8n/README.md` for the full node-by-node breakdown of
 `broadcast-main.workflow.json`. In short: the admin GUI never talks to
-Sendchamp or the members table directly — it only composes a job description
+Brevo/Multitexter or the members table directly — it only composes a job description
 (`{sender_profile, audience_segment, channels, message_template, is_urgent}`)
 and hands it to n8n, which owns all personalization, routing, and delivery
 logic in one place.

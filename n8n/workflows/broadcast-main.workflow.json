@@ -284,9 +284,9 @@
         2440,
         400
       ],
-      "notes": "is_urgent (legal/emergency notices) selects Sendchamp's DND-bypass route. UNVERIFIED: confirm the 'route' field name/values (dnd/non_dnd) against your live Sendchamp account docs before first real send \u2014 that route typically needs separate approval on Sendchamp's side.",
+      "notes": "is_urgent (legal/emergency notices) sets Multitexter's forcednd=1 to bypass Nigerian DND opt-outs for urgent legal/emergency notices; forcednd=0 otherwise. Confirmed against Multitexter's public API docs (https://www.multitexter.com/developers).",
       "parameters": {
-        "jsCode": "const isUrgent = $('Validate & Normalize Input').first().json.is_urgent;\nreturn [{\n  json: {\n    ...$json,\n    sms_route: isUrgent ? 'dnd' : 'non_dnd',\n  },\n}];"
+        "jsCode": "const isUrgent = $('Validate & Normalize Input').first().json.is_urgent;\nreturn [{\n  json: {\n    ...$json,\n    forcednd: isUrgent ? 1 : 0,\n  },\n}];"
       }
     },
     {
@@ -383,83 +383,77 @@
       }
     },
     {
-      "id": "send-sendchamp-email",
-      "name": "Send via Sendchamp Email",
+      "id": "send-brevo-email",
+      "name": "Send via Brevo Email",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
         2920,
         160
       ],
-      "notes": "Payload shape verified against Sendchamp's public API docs only (no live key available). Re-verify against your dashboard's current API reference before first real send.",
+      "notes": "Endpoint and body shape confirmed against Brevo's public API reference (developers.brevo.com/reference/sendtransacemail). Auth header is 'api-key', not Bearer.",
       "parameters": {
         "method": "POST",
-        "url": "={{$env.SENDCHAMP_API_BASE_URL}}/email/send",
+        "url": "https://api.brevo.com/v3/smtp/email",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {\n  \"subject\": $('Validate & Normalize Input').first().json.sender_profile + ' Notice from NBA',\n  \"to\": [ { \"email\": $json.email, \"name\": $json.first_name + ' ' + $json.last_name } ],\n  \"from\": { \"email\": $env.SENDCHAMP_FROM_EMAIL, \"name\": $json.sender_display_name },\n  \"message_body\": { \"type\": \"text/html\", \"value\": $json.personalized_message_html }\n} }}",
+        "jsonBody": "={{ {\n  \"subject\": $('Validate & Normalize Input').first().json.sender_profile + ' Notice from NBA',\n  \"to\": [ { \"email\": $json.email, \"name\": $json.first_name + ' ' + $json.last_name } ],\n  \"sender\": { \"email\": $env.BREVO_SENDER_EMAIL, \"name\": $json.sender_display_name },\n  \"htmlContent\": $json.personalized_message_html\n} }}",
         "options": {}
       },
       "credentials": {
         "httpHeaderAuth": {
           "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Sendchamp API"
+          "name": "Brevo API"
         }
       }
     },
     {
-      "id": "send-sendchamp-whatsapp",
-      "name": "Send via Sendchamp WhatsApp",
+      "id": "send-brevo-whatsapp",
+      "name": "Send via Brevo WhatsApp",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
         2920,
         400
       ],
-      "notes": "UNVERIFIED: interactive RSVP/payment quick-reply buttons require a pre-approved WhatsApp template (Meta/Sendchamp dashboard, manual step outside this repo). WHATSAPP_TEMPLATE_CODE is a placeholder until that approval exists.",
+      "notes": "Endpoint/body base shape confirmed against developers.brevo.com/reference/sendwhatsappmessage. UNVERIFIED: Brevo's docs don't detail how per-message template parameters (e.g. {First_Name}) are passed on this endpoint — 'params' below is a best guess pending a real send; check the response/Brevo dashboard and adjust if params aren't substituted. Interactive RSVP/payment buttons still require a Meta-approved WhatsApp template regardless of provider (BREVO_WHATSAPP_TEMPLATE_ID is a placeholder until one is approved in the Brevo dashboard). contactNumbers takes numbers WITHOUT a leading '+'.",
       "parameters": {
         "method": "POST",
-        "url": "={{$env.SENDCHAMP_API_BASE_URL}}/whatsapp/message/send",
+        "url": "https://api.brevo.com/v3/whatsapp/sendMessage",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {\n  \"recipient\": $json.phone_number,\n  \"sender\": $env.WHATSAPP_SENDER_NUMBER,\n  \"type\": \"template\",\n  \"template_code\": $env.WHATSAPP_TEMPLATE_CODE,\n  \"custom_data\": { \"Body\": { \"1\": $json.first_name, \"2\": String($json.amount_due ?? '') } }\n} }}",
+        "jsonBody": "={{ {\n  \"contactNumbers\": [ Number($json.phone_number.replace('+', '')) ],\n  \"senderNumber\": $env.BREVO_WHATSAPP_SENDER_NUMBER,\n  \"templateId\": Number($env.BREVO_WHATSAPP_TEMPLATE_ID),\n  \"params\": { \"First_Name\": $json.first_name, \"Amount_Due\": String($json.amount_due ?? '') }\n} }}",
         "options": {}
       },
       "credentials": {
         "httpHeaderAuth": {
           "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Sendchamp API"
+          "name": "Brevo API"
         }
       }
     },
     {
-      "id": "send-sendchamp-sms",
-      "name": "Send via Sendchamp SMS",
+      "id": "send-multitexter-sms",
+      "name": "Send via Multitexter SMS",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
         2920,
         640
       ],
+      "notes": "Endpoint and body shape confirmed against multitexter.com/developers. Multitexter authenticates with account email+password IN the JSON body (no header/token auth), so this node uses authentication: none and reads MULTITEXTER_EMAIL/MULTITEXTER_PASSWORD from env instead of an n8n credential. recipients takes numbers WITHOUT a leading '+', comma-separated (a single number here since we send one member at a time).",
       "parameters": {
         "method": "POST",
-        "url": "={{$env.SENDCHAMP_API_BASE_URL}}/sms/send",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "url": "https://app.multitexter.com/v2/app/sms",
+        "authentication": "none",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {\n  \"to\": [ $json.phone_number ],\n  \"message\": $json.personalized_message,\n  \"sender_name\": $json.sms_sender_id,\n  \"route\": $json.sms_route\n} }}",
+        "jsonBody": "={{ {\n  \"email\": $env.MULTITEXTER_EMAIL,\n  \"password\": $env.MULTITEXTER_PASSWORD,\n  \"message\": $json.personalized_message,\n  \"sender_name\": $json.sms_sender_id,\n  \"recipients\": $json.phone_number.replace('+', ''),\n  \"forcednd\": $json.forcednd\n} }}",
         "options": {}
-      },
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Sendchamp API"
-        }
       }
     },
     {
@@ -471,9 +465,9 @@
         3160,
         160
       ],
-      "notes": "UNVERIFIED: field names for Sendchamp's success indicator and message id are inferred from public docs; confirm against a real response before relying on delivery status.",
+      "notes": "Brevo returns HTTP 201 with a top-level messageId on success (confirmed in their API reference); on failure it returns an error body with no messageId. n8n's HTTP Request node surfaces the parsed body here regardless of status code (errors aren't thrown by default), so presence of messageId is the success signal.",
       "parameters": {
-        "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = resp && (resp.status === 'success' || resp.code === '00' || resp.success === true);\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'email',\n    recipient_address: ctx.email,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.data?.id ?? resp?.data?.message_id ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
+        "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = !!(resp && resp.messageId);\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'email',\n    recipient_address: ctx.email,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.messageId ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
       }
     },
     {
@@ -485,9 +479,9 @@
         3160,
         400
       ],
-      "notes": "UNVERIFIED: see notes on the Send via Sendchamp WhatsApp node.",
+      "notes": "Same messageId success signal as the email node, per Brevo's API reference. Still UNVERIFIED end-to-end since a real send needs an approved WhatsApp template — see notes on the Send via Brevo WhatsApp node.",
       "parameters": {
-        "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = resp && (resp.status === 'success' || resp.code === '00' || resp.success === true);\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'whatsapp',\n    recipient_address: ctx.phone_number,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.data?.id ?? resp?.data?.message_id ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
+        "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = !!(resp && resp.messageId);\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'whatsapp',\n    recipient_address: ctx.phone_number,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.messageId ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
       }
     },
     {
@@ -499,9 +493,9 @@
         3160,
         640
       ],
-      "notes": "UNVERIFIED: see notes on the Send via Sendchamp Email node \u2014 same response-shape caveat applies to SMS.",
+      "notes": "UNVERIFIED: Multitexter's public developer page (multitexter.com/developers) documents the request shape but not the response shape at all \u2014 no example success/error body is shown. The success/failure heuristic and provider_message_id field name below are best guesses; capture a real response from your account and correct this node before relying on delivery status (or on 'status' at all \u2014 it may need to default to 'sent' unconditionally if Multitexter doesn't return a clear indicator).",
       "parameters": {
-        "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = resp && (resp.status === 'success' || resp.code === '00' || resp.success === true);\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'sms',\n    recipient_address: ctx.phone_number,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.data?.id ?? resp?.data?.message_id ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
+        "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = !(resp && (resp.error || resp.status === 'failed' || resp.success === false));\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'sms',\n    recipient_address: ctx.phone_number,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.message_id ?? resp?.id ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
       }
     },
     {
@@ -551,7 +545,7 @@
         3880,
         400
       ],
-      "notes": "Throttles batch-to-batch pacing against Sendchamp rate limits before looping back to Batch Members.",
+      "notes": "Throttles batch-to-batch pacing against Brevo/Multitexter rate limits before looping back to Batch Members.",
       "parameters": {
         "amount": "={{ Number($env.BROADCAST_BATCH_DELAY_SECONDS) || 2 }}",
         "unit": "seconds"
@@ -775,7 +769,7 @@
       "main": [
         [
           {
-            "node": "Send via Sendchamp Email",
+            "node": "Send via Brevo Email",
             "type": "main",
             "index": 0
           }
@@ -787,7 +781,7 @@
       "main": [
         [
           {
-            "node": "Send via Sendchamp WhatsApp",
+            "node": "Send via Brevo WhatsApp",
             "type": "main",
             "index": 0
           }
@@ -799,7 +793,7 @@
       "main": [
         [
           {
-            "node": "Send via Sendchamp SMS",
+            "node": "Send via Multitexter SMS",
             "type": "main",
             "index": 0
           }
@@ -807,7 +801,7 @@
         []
       ]
     },
-    "Send via Sendchamp Email": {
+    "Send via Brevo Email": {
       "main": [
         [
           {
@@ -818,7 +812,7 @@
         ]
       ]
     },
-    "Send via Sendchamp WhatsApp": {
+    "Send via Brevo WhatsApp": {
       "main": [
         [
           {
@@ -829,7 +823,7 @@
         ]
       ]
     },
-    "Send via Sendchamp SMS": {
+    "Send via Multitexter SMS": {
       "main": [
         [
           {

@@ -41,8 +41,8 @@ is a data operation, not a deployment:
    as `db/migrations/008_seed_dev_data.sql`.
 3. Import its member roster via the same Sheets→Postgres procedure above,
    using the new branch's `branch_id`.
-4. Register the branch's own Sendchamp Sender ID (see
-   `docs/SENDCHAMP_SETUP.md`).
+4. Register the branch's own Multitexter Sender ID (see
+   `docs/PROVIDERS_SETUP.md`).
 
 **Known follow-up work, not built in this pass**: the admin GUI currently
 composes broadcasts for a single `DEFAULT_BRANCH_SLUG` (env-configured).

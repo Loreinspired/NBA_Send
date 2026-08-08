@@ -11,8 +11,13 @@ credential warning:
 |---|---|---|---|
 | `Admin GUI Webhook Secret` | Header Auth | `Broadcast Trigger`, `Lookup Trigger` webhook nodes | Header name `X-Webhook-Secret`, value = your `.env`'s `N8N_WEBHOOK_SECRET` |
 | `NBA Postgres (App DB)` | Postgres | Every Postgres node | Host `postgres` (or your DB host), database = `.env`'s `APP_DB_NAME`, user/password = `.env`'s `POSTGRES_USER`/`POSTGRES_PASSWORD` (or a dedicated least-privilege app role — see note below) |
-| `Sendchamp API` | Header Auth | `Send via Sendchamp *` HTTP Request nodes | Header name `Authorization`, value `Bearer <your Sendchamp API key>` — see `../../docs/SENDCHAMP_SETUP.md` |
+| `Brevo API` | Header Auth | `Send via Brevo Email`, `Send via Brevo WhatsApp` HTTP Request nodes | Header name `api-key` (not `Authorization`), value = your `.env`'s `BREVO_API_KEY` — see `../../docs/PROVIDERS_SETUP.md` |
 | `NBA Google Sheets` | Google Sheets OAuth2 API | `Fetch Members (Sheets)` | A Google account with access to the branch's members spreadsheet. Not required if `DATA_SOURCE=postgres` (the default). |
+
+**`Send via Multitexter SMS` needs no n8n credential** — Multitexter
+authenticates with account email+password inside the request body, so that
+node reads `MULTITEXTER_EMAIL`/`MULTITEXTER_PASSWORD` directly from
+environment variables instead.
 
 ## Least-privilege Postgres role (recommended before any real deployment)
 
