@@ -9,6 +9,7 @@ set -euo pipefail
 : "${PGUSER:?PGUSER must be set}"
 : "${PGPASSWORD:?PGPASSWORD must be set}"
 : "${PGDATABASE:?PGDATABASE must be set (target app database name)}"
+: "${NBA_APP_RUNTIME_PASSWORD:?NBA_APP_RUNTIME_PASSWORD must be set (password for the least-privilege nba_app_runtime role created by migration 010)}"
 
 MIGRATIONS_DIR="$(dirname "$0")/migrations"
 export PGPASSWORD
@@ -40,9 +41,23 @@ for migration in $(ls "$MIGRATIONS_DIR"/*.sql | sort); do
         continue
     fi
     echo "Applying migration: ${name}"
-    psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 -f "$migration"
+    psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
+        -v app_db_name="$PGDATABASE" -f "$migration"
     psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 -c \
         "INSERT INTO schema_migrations (filename) VALUES ('${name}');"
 done
 
 echo "All migrations applied."
+
+# Set (or reset) nba_app_runtime's password out of band, never in a
+# committed .sql file. Idempotent: safe to run on every deploy even if
+# migration 010 already applied on a previous run. Uses -f rather than -c:
+# psql's :'var' interpolation is only honored when reading a script file,
+# not with a -c command string.
+echo "Setting nba_app_runtime password..."
+SET_PASSWORD_SQL="$(mktemp)"
+trap 'rm -f "$SET_PASSWORD_SQL"' EXIT
+echo "ALTER ROLE nba_app_runtime PASSWORD :'nba_app_runtime_password';" > "$SET_PASSWORD_SQL"
+psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 \
+    -v nba_app_runtime_password="$NBA_APP_RUNTIME_PASSWORD" \
+    -f "$SET_PASSWORD_SQL"

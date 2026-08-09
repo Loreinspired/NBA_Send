@@ -12,6 +12,10 @@ migration framework, to keep the dependency surface minimal (only the stock
 - `migrations/006_message_log.sql` – per-member, per-channel delivery audit trail
 - `migrations/007_row_level_security.sql` – branch-scoped Row-Level Security policies
 - `migrations/008_seed_dev_data.sql` – local-dev-only seed data (skip in production)
+- `migrations/009_whatsapp_replies.sql` – `message_log.reply_payload`/`replied_at` for RSVP/payment reply capture
+- `migrations/010_nba_app_runtime_role.sql` – the least-privilege runtime role n8n and admin-gui actually connect as (its password is set separately by `migrate.sh`, not in this file)
+- `migrations/011_broadcasts_updated_at.sql` – `broadcasts.updated_at`, used by `n8n/workflows/broadcast-reaper.workflow.json` to detect broadcasts stuck mid-pipeline
+- `migrations/012_rls_helper_functions.sql` – PL/pgSQL functions that every RLS-scoped query in n8n and admin-gui now goes through (see "RLS and connection pooling" below) — **required**, not optional
 
 ## Running migrations
 
@@ -19,11 +23,38 @@ In Docker Compose this happens automatically via the `db-migrate` service on
 every `docker compose up`. To run manually against a database:
 
 ```bash
-PGHOST=localhost PGUSER=nba_admin PGPASSWORD=... PGDATABASE=nba_send ./migrate.sh
+PGHOST=localhost PGUSER=nba_admin PGPASSWORD=... PGDATABASE=nba_send \
+  NBA_APP_RUNTIME_PASSWORD=... ./migrate.sh
 ```
 
 `migrate.sh` is idempotent: it tracks applied files in a `schema_migrations`
 table and only runs new ones.
+
+## RLS and connection pooling
+
+`007_row_level_security.sql` scopes every tenant table to a
+`app.current_branch_id` session variable. The obvious way to set that from a
+pooled connection — `WITH _ctx AS (SELECT set_config('app.current_branch_id',
+'ALL', false)) SELECT ...` — **does not work**, confirmed by direct testing:
+an unreferenced CTE never executes at all, and even referenced (e.g. via a
+`CROSS JOIN`), Postgres's planner is free to evaluate the RLS policy's
+`USING` clause before it, since both are just quals ANDed together with no
+ordering guarantee. RLS fails closed, so both failure modes silently look
+like "no rows" or "insert rejected," not an error — this went unnoticed
+through an earlier pass of this codebase.
+
+`012_rls_helper_functions.sql` fixes this properly: every query that needs
+branch context goes through a small PL/pgSQL function
+(`claim_next_pending_broadcast()`, `fetch_sender_profile()`,
+`list_sender_profiles()`, etc.) where `PERFORM set_config(...)` runs first
+and the real query runs second, as two sequential statements inside one
+function body — the only statement ordering Postgres actually guarantees.
+Callers (n8n's Postgres node, admin-gui) just call
+`SELECT * FROM fn($1, ...)` like any other single parameterized statement;
+no multi-statement connection affinity or manual SQL-escaping is needed.
+These functions are deliberately `SECURITY INVOKER` (the default — do not
+add `SECURITY DEFINER`), so RLS applies as whichever role actually calls
+them (`nba_app_runtime`), not as the migration-owner role that defines them.
 
 ## Production note on seed data
 

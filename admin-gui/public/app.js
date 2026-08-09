@@ -72,7 +72,7 @@ async function loadSenderProfiles() {
       return;
     }
     senderProfileSelect.innerHTML = profiles
-      .map((p) => `<option value="${p.role}">${p.display_name}</option>`)
+      .map((p) => `<option value="${p.id}">${p.display_name}</option>`)
       .join('');
   } catch (err) {
     senderProfileSelect.innerHTML = '<option value="" disabled selected>Could not load sender profiles</option>';
@@ -106,7 +106,7 @@ broadcastForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   broadcastResult.classList.add('hidden');
   broadcastBtn.disabled = true;
-  broadcastBtn.textContent = 'Sending…';
+  broadcastBtn.textContent = 'Queuing…';
 
   const channels = Array.from(document.querySelectorAll('input[name="channel"]:checked')).map((c) => c.value);
 
@@ -115,7 +115,7 @@ broadcastForm.addEventListener('submit', async (e) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        sender_profile: senderProfileSelect.value,
+        sender_profile_id: senderProfileSelect.value,
         audience_segment: document.getElementById('audienceSegment').value,
         channels,
         message_template: messageTemplate.value,
@@ -126,7 +126,7 @@ broadcastForm.addEventListener('submit', async (e) => {
     broadcastResult.classList.remove('hidden');
     if (res.ok) {
       broadcastResult.className = 'success';
-      broadcastResult.textContent = `Broadcast sent. Reference: ${data.broadcast_id || 'n/a'} (status: ${data.status || 'unknown'})`;
+      broadcastResult.textContent = `Broadcast queued (reference: ${data.broadcast_id || 'n/a'}). Sending will begin within about 30 seconds.`;
     } else {
       broadcastResult.className = 'error';
       broadcastResult.textContent = (data.messages && data.messages.join('; ')) || data.error || 'Broadcast failed';

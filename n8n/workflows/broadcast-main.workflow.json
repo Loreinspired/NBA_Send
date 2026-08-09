@@ -3,89 +3,32 @@
   "name": "NBA Broadcast - Main",
   "nodes": [
     {
-      "id": "broadcast-trigger",
-      "name": "Broadcast Trigger",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
-      "position": [
-        -200,
-        400
-      ],
-      "notes": "POST /webhook/broadcast. Body shape: {branch_slug, sender_profile, audience_segment, channels[], message_template, is_urgent, requested_by}. Called by admin-gui/server.js, never directly from the browser.",
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-200, 260],
+      "notes": "Polls for pending broadcasts every 25s. Replaces the original Webhook-trigger design after n8n's production webhook registration was found to be broken in this deployment — confirmed across three n8n versions (2.33.7, 1.123.69, 1.70.0), via CLI activation, genuine UI clicks, full-body PATCH, and container restarts; workflows showed active=true with a correct webhook_entity row, but the production URL always 404'd. Schedule Trigger uses n8n's internal scheduler, a structurally different and far more battle-tested code path, unaffected by that bug. admin-gui now INSERTs directly into `broadcasts` (status='pending') instead of calling a webhook — see admin-gui/server.js's POST /api/broadcast.",
       "parameters": {
-        "httpMethod": "POST",
-        "path": "broadcast",
-        "responseMode": "responseNode",
-        "authentication": "headerAuth",
+        "rule": {
+          "interval": [{ "field": "seconds", "secondsInterval": 25 }]
+        }
+      }
+    },
+    {
+      "id": "claim-next-broadcast",
+      "name": "Claim Next Pending Broadcast",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [40, 260],
+      "notes": "Atomically claims the oldest pending broadcast with FOR UPDATE SKIP LOCKED, so two overlapping poll executions (e.g. a slow prior run still finishing when the next tick fires) can never claim the same row and double-send. Calls claim_next_pending_broadcast() (db/migrations/012_rls_helper_functions.sql), which sets the RLS branch context via set_config and runs the claim inside one PL/pgSQL function body — a WITH-CTE version of this was tried first and does NOT work: an unreferenced CTE never executes at all, and even referenced, the planner can evaluate RLS's USING clause before it since both are just ANDed quals with no ordering guarantee (confirmed by direct testing, not a hypothetical). Sequential statements inside a single PL/pgSQL function are the only ordering Postgres actually guarantees. 'ALL' is used unconditionally for now since only one branch exists and admin-gui doesn't yet support branch selection (see docs/MIGRATION.md's National rollout section for when this needs to become per-branch).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM claim_next_pending_broadcast();",
         "options": {}
       },
       "credentials": {
-        "httpHeaderAuth": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Admin GUI Webhook Secret"
-        }
-      }
-    },
-    {
-      "id": "validate-input",
-      "name": "Validate & Normalize Input",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        40,
-        400
-      ],
-      "parameters": {
-        "jsCode": "const body = ($input.first().json.body ?? $input.first().json) || {};\nconst errors = [];\nconst required = ['branch_slug', 'sender_profile', 'audience_segment', 'channels', 'message_template'];\nfor (const field of required) {\n  if (!body[field]) errors.push(`Missing required field: ${field}`);\n}\n\nconst validChannels = ['email', 'whatsapp', 'sms'];\nconst channels = Array.isArray(body.channels) ? body.channels : [];\nconst badChannels = channels.filter((c) => !validChannels.includes(c));\nif (channels.length === 0) errors.push('At least one channel must be selected');\nif (badChannels.length > 0) errors.push(`Unknown channel(s): ${badChannels.join(', ')}`);\n\nconst validRoles = ['pro', 'branch_chairman', 'secretariat'];\nif (body.sender_profile && !validRoles.includes(body.sender_profile)) {\n  errors.push(`Unknown sender_profile: ${body.sender_profile}`);\n}\n\nconst validSegments = ['all_members', 'executive_committee', 'financial_members'];\nif (body.audience_segment && !validSegments.includes(body.audience_segment)) {\n  errors.push(`Unknown audience_segment: ${body.audience_segment}`);\n}\n\nreturn [{\n  json: {\n    valid: errors.length === 0,\n    errors,\n    branch_slug: body.branch_slug,\n    sender_profile: body.sender_profile,\n    audience_segment: body.audience_segment,\n    channels,\n    message_template: body.message_template,\n    is_urgent: !!body.is_urgent,\n    requested_by: body.requested_by || 'unknown',\n  },\n}];"
-      }
-    },
-    {
-      "id": "input-valid-if",
-      "name": "Input Valid?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [
-        280,
-        400
-      ],
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict"
-          },
-          "conditions": [
-            {
-              "leftValue": "={{$json.valid}}",
-              "rightValue": true,
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      }
-    },
-    {
-      "id": "respond-validation-error",
-      "name": "Respond Validation Error",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
-      "position": [
-        520,
-        620
-      ],
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ { \"error\": true, \"messages\": $json.errors } }}",
-        "options": {
-          "responseCode": 400
-        }
+        "postgres": { "id": "REPLACE_WITH_CREDENTIAL_ID", "name": "NBA Postgres (App DB)" }
       }
     },
     {
@@ -93,46 +36,17 @@
       "name": "Fetch Sender Profile",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [
-        520,
-        260
-      ],
-      "notes": "Runs once (single input item) before the member fetch, so its output is safely available to every later node via $('Fetch Sender Profile').first().json, including inside the Batch Members loop.",
+      "position": [280, 260],
+      "notes": "Keyed directly by sender_profile_id (a UUID already resolved when admin-gui inserted the broadcasts row) rather than (branch_slug, role) — simpler now that there's no webhook body to parse role strings out of. Runs once (single input item), so its output is safely available to every later node via $('Fetch Sender Profile').first().json, including inside the Batch Members loop.",
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT sp.id AS sender_profile_id, sp.display_name, sp.signature_block, sp.contact_phone, sp.contact_email, b.id AS branch_id, b.sms_sender_id\nFROM sender_profiles sp\nJOIN branches b ON b.id = sp.branch_id\nWHERE b.slug = $1 AND sp.role = $2 AND sp.is_active = true;",
+        "query": "SELECT * FROM fetch_sender_profile($1::uuid);",
         "options": {
-          "queryReplacement": "={{ [$json.branch_slug, $json.sender_profile] }}"
+          "queryReplacement": "={{ [$json.sender_profile_id] }}"
         }
       },
       "credentials": {
-        "postgres": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "NBA Postgres (App DB)"
-        }
-      }
-    },
-    {
-      "id": "create-broadcast-record",
-      "name": "Create Broadcast Record",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [
-        760,
-        260
-      ],
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "INSERT INTO broadcasts (branch_id, sender_profile_id, audience_segment, channels, message_template, is_urgent, requested_by, status)\nVALUES ($1::uuid, $2::uuid, $3, $4::text[], $5, $6, $7, 'in_progress')\nRETURNING id AS broadcast_id;",
-        "options": {
-          "queryReplacement": "={{ [$json.branch_id, $json.sender_profile_id, $('Validate & Normalize Input').first().json.audience_segment, $('Validate & Normalize Input').first().json.channels, $('Validate & Normalize Input').first().json.message_template, $('Validate & Normalize Input').first().json.is_urgent, $('Validate & Normalize Input').first().json.requested_by] }}"
-        }
-      },
-      "credentials": {
-        "postgres": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "NBA Postgres (App DB)"
-        }
+        "postgres": { "id": "REPLACE_WITH_CREDENTIAL_ID", "name": "NBA Postgres (App DB)" }
       }
     },
     {
@@ -140,26 +54,16 @@
       "name": "Data Source Router",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [
-        1000,
-        260
-      ],
+      "position": [520, 260],
       "notes": "DATA_SOURCE env var controls Phase 1 (sheets) vs Phase 2+ (postgres). Postgres is the path tested in this repo; sheets requires a live Google OAuth2 credential and is unverified.",
       "parameters": {
         "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict"
-          },
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
           "conditions": [
             {
               "leftValue": "={{$env.DATA_SOURCE}}",
               "rightValue": "postgres",
-              "operator": {
-                "type": "string",
-                "operation": "equals"
-              }
+              "operator": { "type": "string", "operation": "equals" }
             }
           ],
           "combinator": "and"
@@ -172,22 +76,17 @@
       "name": "Fetch Members (Postgres)",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [
-        1240,
-        140
-      ],
+      "position": [760, 140],
+      "notes": "Filters by branch_id (a real UUID from the claimed broadcast row) directly, rather than joining through branches.slug — no slug is available anymore since there's no webhook body.",
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT m.id AS member_id, m.first_name, m.last_name, m.email, m.phone_number,\n       m.financial_status, m.committee_role, m.amount_due, m.branch_id\nFROM members m\nJOIN branches b ON b.id = m.branch_id\nWHERE b.slug = $1 AND m.is_active = true;",
+        "query": "SELECT * FROM fetch_members_by_branch($1::uuid);",
         "options": {
-          "queryReplacement": "={{ [$('Validate & Normalize Input').first().json.branch_slug] }}"
+          "queryReplacement": "={{ [$('Claim Next Pending Broadcast').first().json.branch_id] }}"
         }
       },
       "credentials": {
-        "postgres": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "NBA Postgres (App DB)"
-        }
+        "postgres": { "id": "REPLACE_WITH_CREDENTIAL_ID", "name": "NBA Postgres (App DB)" }
       }
     },
     {
@@ -195,29 +94,17 @@
       "name": "Fetch Members (Sheets)",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [
-        1240,
-        380
-      ],
+      "position": [760, 380],
       "notes": "UNVERIFIED: no live Google account was available to test this node. Column mapping assumes the Phase-1 sheet header row exactly matches docs/samples/nba_members_template.csv (First_Name, Last_Name, Email, Phone_Number, Financial_Status). Configure documentId/sheetName and the Google Sheets OAuth2 credential after import, then re-verify field names against a real spreadsheet.",
       "parameters": {
         "resource": "sheet",
         "operation": "read",
-        "documentId": {
-          "mode": "id",
-          "value": "REPLACE_WITH_GOOGLE_SHEET_ID"
-        },
-        "sheetName": {
-          "mode": "name",
-          "value": "Members"
-        },
+        "documentId": { "mode": "id", "value": "REPLACE_WITH_GOOGLE_SHEET_ID" },
+        "sheetName": { "mode": "name", "value": "Members" },
         "options": {}
       },
       "credentials": {
-        "googleSheetsOAuth2Api": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "NBA Google Sheets"
-        }
+        "googleSheetsOAuth2Api": { "id": "REPLACE_WITH_CREDENTIAL_ID", "name": "NBA Google Sheets" }
       }
     },
     {
@@ -225,26 +112,17 @@
       "name": "Merge Data Sources",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
-      "position": [
-        1480,
-        260
-      ],
-      "parameters": {
-        "mode": "append",
-        "numberInputs": 2
-      }
+      "position": [1000, 260],
+      "parameters": { "mode": "append", "numberInputs": 2 }
     },
     {
       "id": "filter-by-audience-segment",
       "name": "Filter by Audience Segment",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        1720,
-        260
-      ],
+      "position": [1240, 260],
       "parameters": {
-        "jsCode": "// Normalizes field casing between the Postgres path (snake_case) and the\n// Sheets path (sheet header casing) since both converge here.\nfunction normalize(json) {\n  return {\n    member_id: json.member_id ?? json.id ?? json.ID,\n    first_name: json.first_name ?? json.First_Name,\n    last_name: json.last_name ?? json.Last_Name,\n    email: json.email ?? json.Email ?? null,\n    phone_number: json.phone_number ?? json.Phone_Number,\n    financial_status: (json.financial_status ?? json.Financial_Status ?? 'unknown').toString().toLowerCase(),\n    committee_role: (json.committee_role ?? json.Committee_Role ?? 'none').toString().toLowerCase(),\n    amount_due: json.amount_due ?? json.Amount_Due ?? null,\n    branch_id: json.branch_id,\n  };\n}\n\nconst segment = $('Validate & Normalize Input').first().json.audience_segment;\nconst normalized = $input.all().map((item) => normalize(item.json));\n\nconst filtered = normalized.filter((m) => {\n  if (segment === 'all_members') return true;\n  if (segment === 'executive_committee') return m.committee_role === 'executive';\n  if (segment === 'financial_members') return m.financial_status === 'financial';\n  return false;\n});\n\nreturn filtered.map((m) => ({ json: m }));"
+        "jsCode": "// Normalizes field casing between the Postgres path (snake_case) and the\n// Sheets path (sheet header casing) since both converge here.\nfunction normalize(json) {\n  return {\n    member_id: json.member_id ?? json.id ?? json.ID,\n    first_name: json.first_name ?? json.First_Name,\n    last_name: json.last_name ?? json.Last_Name,\n    email: json.email ?? json.Email ?? null,\n    phone_number: json.phone_number ?? json.Phone_Number,\n    financial_status: (json.financial_status ?? json.Financial_Status ?? 'unknown').toString().toLowerCase(),\n    committee_role: (json.committee_role ?? json.Committee_Role ?? 'none').toString().toLowerCase(),\n    amount_due: json.amount_due ?? json.Amount_Due ?? null,\n    branch_id: json.branch_id,\n  };\n}\n\nconst segment = $('Claim Next Pending Broadcast').first().json.audience_segment;\nconst normalized = $input.all().map((item) => normalize(item.json));\n\nconst filtered = normalized.filter((m) => {\n  if (segment === 'all_members') return true;\n  if (segment === 'executive_committee') return m.committee_role === 'executive';\n  if (segment === 'financial_members') return m.financial_status === 'financial';\n  return false;\n});\n\nreturn filtered.map((m) => ({ json: m }));"
       }
     },
     {
@@ -252,10 +130,7 @@
       "name": "Batch Members",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [
-        1960,
-        260
-      ],
+      "position": [1480, 260],
       "notes": "Output 0 (done) fires once after every batch has looped through; output 1 (loop) fires per batch and feeds the per-member send pipeline, which loops back into this node's input via the Wait node.",
       "parameters": {
         "batchSize": "={{ Number($env.BROADCAST_BATCH_SIZE) || 50 }}",
@@ -267,12 +142,9 @@
       "name": "Personalize Message",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        2200,
-        400
-      ],
+      "position": [1720, 400],
       "parameters": {
-        "jsCode": "const member = $json;\nconst broadcast = $('Validate & Normalize Input').first().json;\nconst senderProfile = $('Fetch Sender Profile').first().json;\n\nfunction substitute(template, values) {\n  return template.replace(/\\{(\\w+)\\}/g, (match, key) => (key in values ? String(values[key]) : match));\n}\n\nconst values = {\n  First_Name: member.first_name,\n  Last_Name: member.last_name,\n  Amount_Due: member.amount_due != null ? member.amount_due : '',\n  Sender_Profile: senderProfile.display_name,\n};\n\nconst bodyText = substitute(broadcast.message_template, values);\nconst personalized_message = bodyText + (senderProfile.signature_block || '');\n\nreturn [{\n  json: {\n    ...member,\n    broadcast_id: $('Create Broadcast Record').first().json.broadcast_id,\n    sender_profile_id: senderProfile.sender_profile_id,\n    sender_display_name: senderProfile.display_name,\n    sms_sender_id: senderProfile.sms_sender_id,\n    personalized_message,\n    personalized_message_html: personalized_message.replace(/\\n/g, '<br>'),\n  },\n}];"
+        "jsCode": "const member = $json;\nconst broadcast = $('Claim Next Pending Broadcast').first().json;\nconst senderProfile = $('Fetch Sender Profile').first().json;\n\nfunction substitute(template, values) {\n  return template.replace(/\\{(\\w+)\\}/g, (match, key) => (key in values ? String(values[key]) : match));\n}\n\nconst values = {\n  First_Name: member.first_name,\n  Last_Name: member.last_name,\n  Amount_Due: member.amount_due != null ? member.amount_due : '',\n  Sender_Profile: senderProfile.display_name,\n};\n\nconst bodyText = substitute(broadcast.message_template, values);\nconst personalized_message = bodyText + (senderProfile.signature_block || '');\n\nreturn [{\n  json: {\n    ...member,\n    broadcast_id: broadcast.broadcast_id,\n    sender_profile_id: senderProfile.sender_profile_id,\n    sender_display_name: senderProfile.display_name,\n    sms_sender_id: senderProfile.sms_sender_id,\n    personalized_message,\n    personalized_message_html: personalized_message.replace(/\\n/g, '<br>'),\n  },\n}];"
       }
     },
     {
@@ -280,13 +152,10 @@
       "name": "Select SMS Route",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        2440,
-        400
-      ],
-      "notes": "is_urgent (legal/emergency notices) sets Multitexter's forcednd=1 to bypass Nigerian DND opt-outs for urgent legal/emergency notices; forcednd=0 otherwise. Confirmed against Multitexter's public API docs (https://www.multitexter.com/developers).",
+      "position": [1960, 400],
+      "notes": "is_urgent (legal/emergency notices) sets Multitexter's forcednd=1 to bypass Nigerian DND opt-outs; forcednd=0 otherwise. Confirmed against Multitexter's public API docs (https://www.multitexter.com/developers) and a real successful test send.",
       "parameters": {
-        "jsCode": "const isUrgent = $('Validate & Normalize Input').first().json.is_urgent;\nreturn [{\n  json: {\n    ...$json,\n    forcednd: isUrgent ? 1 : 0,\n  },\n}];"
+        "jsCode": "const isUrgent = $('Claim Next Pending Broadcast').first().json.is_urgent;\nreturn [{\n  json: {\n    ...$json,\n    forcednd: isUrgent ? 1 : 0,\n  },\n}];"
       }
     },
     {
@@ -294,25 +163,16 @@
       "name": "Channel: Email?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [
-        2680,
-        160
-      ],
+      "position": [2200, 160],
+      "notes": "Uses a plain boolean expression (.includes()) rather than the IF node's built-in 'array contains' operator with strict type validation — confirmed by a real local n8n execution that the built-in operator throws 'Wrong type: X is a string but was expecting an array' against a genuinely real, correctly-typed array (verified independently via node-postgres: dataTypeID 1009, Array.isArray() true) when that array has exactly one element. Not related to the RLS fix — a pre-existing n8n node quirk that only surfaces on real execution, never caught by this session's earlier Code-node-only unit tests.",
       "parameters": {
         "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict"
-          },
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
           "conditions": [
             {
-              "leftValue": "={{$('Validate & Normalize Input').first().json.channels}}",
-              "rightValue": "email",
-              "operator": {
-                "type": "array",
-                "operation": "contains"
-              }
+              "leftValue": "={{ ($('Claim Next Pending Broadcast').first().json.channels || []).includes('email') }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
             }
           ],
           "combinator": "and"
@@ -325,25 +185,16 @@
       "name": "Channel: WhatsApp?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [
-        2680,
-        400
-      ],
+      "position": [2200, 400],
+      "notes": "See Channel: Email?'s notes — same fix, same reason (the IF node's built-in 'array contains' operator misbehaves on a genuinely real single-element array).",
       "parameters": {
         "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict"
-          },
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
           "conditions": [
             {
-              "leftValue": "={{$('Validate & Normalize Input').first().json.channels}}",
-              "rightValue": "whatsapp",
-              "operator": {
-                "type": "array",
-                "operation": "contains"
-              }
+              "leftValue": "={{ ($('Claim Next Pending Broadcast').first().json.channels || []).includes('whatsapp') }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
             }
           ],
           "combinator": "and"
@@ -356,25 +207,16 @@
       "name": "Channel: SMS?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [
-        2680,
-        640
-      ],
+      "position": [2200, 640],
+      "notes": "See Channel: Email?'s notes — same fix, same reason (the IF node's built-in 'array contains' operator misbehaves on a genuinely real single-element array).",
       "parameters": {
         "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict"
-          },
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
           "conditions": [
             {
-              "leftValue": "={{$('Validate & Normalize Input').first().json.channels}}",
-              "rightValue": "sms",
-              "operator": {
-                "type": "array",
-                "operation": "contains"
-              }
+              "leftValue": "={{ ($('Claim Next Pending Broadcast').first().json.channels || []).includes('sms') }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
             }
           ],
           "combinator": "and"
@@ -387,11 +229,8 @@
       "name": "Send via Brevo Email",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        2920,
-        160
-      ],
-      "notes": "Endpoint and body shape confirmed against Brevo's public API reference (developers.brevo.com/reference/sendtransacemail). Auth header is 'api-key', not Bearer.",
+      "position": [2440, 160],
+      "notes": "Confirmed working by a real test send on 2026-08-09 (real messageId returned, HTTP 201, delivered to a live inbox). Endpoint/body shape per developers.brevo.com/reference/sendtransacemail. Subject now uses sender_display_name (e.g. 'Barr. Chukwuemeka Okafor, Branch Chairman') rather than the raw role string, since there's no webhook body carrying that string anymore.",
       "parameters": {
         "method": "POST",
         "url": "https://api.brevo.com/v3/smtp/email",
@@ -399,41 +238,32 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {\n  \"subject\": $('Validate & Normalize Input').first().json.sender_profile + ' Notice from NBA',\n  \"to\": [ { \"email\": $json.email, \"name\": $json.first_name + ' ' + $json.last_name } ],\n  \"sender\": { \"email\": $env.BREVO_SENDER_EMAIL, \"name\": $json.sender_display_name },\n  \"htmlContent\": $json.personalized_message_html\n} }}",
+        "jsonBody": "={{ {\n  \"subject\": $json.sender_display_name + ' Notice from NBA',\n  \"to\": [ { \"email\": $json.email, \"name\": $json.first_name + ' ' + $json.last_name } ],\n  \"sender\": { \"email\": $env.BREVO_SENDER_EMAIL, \"name\": $json.sender_display_name },\n  \"htmlContent\": $json.personalized_message_html\n} }}",
         "options": {}
       },
       "credentials": {
-        "httpHeaderAuth": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Brevo API"
-        }
+        "httpHeaderAuth": { "id": "REPLACE_WITH_CREDENTIAL_ID", "name": "Brevo API" }
       }
     },
     {
-      "id": "send-brevo-whatsapp",
-      "name": "Send via Brevo WhatsApp",
+      "id": "send-sendchamp-whatsapp",
+      "name": "Send via Sendchamp WhatsApp",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        2920,
-        400
-      ],
-      "notes": "Endpoint/body base shape confirmed against developers.brevo.com/reference/sendwhatsappmessage AND against a real test call on 2026-08-08: contactNumbers must be an array of STRINGS (not numbers — the docs' bare-number example is misleading, confirmed by trial: a numeric value gets 'Invalid contactNumbers', a string value passes validation), without a leading '+'. Reached as far as 'senderNumber is invalid' with a placeholder sender, which requires a real WhatsApp number connected in Brevo's dashboard to get further. UNVERIFIED: Brevo's docs don't detail how per-message template parameters (e.g. {First_Name}) are passed on this endpoint — 'params' below is a best guess pending a real send with an approved template; check the response/Brevo dashboard and adjust if params aren't substituted. Interactive RSVP/payment buttons still require a Meta-approved WhatsApp template regardless of provider (BREVO_WHATSAPP_TEMPLATE_ID is a placeholder until one is approved in the Brevo dashboard).",
+      "position": [2440, 400],
+      "notes": "Reverted from Brevo: Brevo's WhatsApp product isn't available on its free tier. Sendchamp already has a tested API key from this session (auth confirmed working — its email/SMS test calls reached the account correctly) and its WhatsApp endpoint only failed on 'unable to get sender number', not a plan/billing wall — connect a WhatsApp Business number in Sendchamp's dashboard (see docs/PROVIDERS_SETUP.md) to get further. Interactive RSVP/payment buttons still require a Meta-approved WhatsApp template regardless of provider. custom_data param mapping is UNVERIFIED (built from Sendchamp's public docs only).",
       "parameters": {
         "method": "POST",
-        "url": "https://api.brevo.com/v3/whatsapp/sendMessage",
+        "url": "={{$env.SENDCHAMP_API_BASE_URL}}/whatsapp/message/send",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {\n  \"contactNumbers\": [ $json.phone_number.replace('+', '') ],\n  \"senderNumber\": $env.BREVO_WHATSAPP_SENDER_NUMBER,\n  \"templateId\": Number($env.BREVO_WHATSAPP_TEMPLATE_ID),\n  \"params\": { \"First_Name\": $json.first_name, \"Amount_Due\": String($json.amount_due ?? '') }\n} }}",
+        "jsonBody": "={{ {\n  \"recipient\": $json.phone_number,\n  \"sender\": $env.SENDCHAMP_WHATSAPP_SENDER_NUMBER,\n  \"type\": \"template\",\n  \"template_code\": $env.SENDCHAMP_WHATSAPP_TEMPLATE_CODE,\n  \"custom_data\": { \"Body\": { \"1\": $json.first_name, \"2\": String($json.amount_due ?? '') } }\n} }}",
         "options": {}
       },
       "credentials": {
-        "httpHeaderAuth": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Brevo API"
-        }
+        "httpHeaderAuth": { "id": "REPLACE_WITH_CREDENTIAL_ID", "name": "Sendchamp API" }
       }
     },
     {
@@ -441,11 +271,8 @@
       "name": "Send via Multitexter SMS",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        2920,
-        640
-      ],
-      "notes": "Endpoint and body shape confirmed against multitexter.com/developers. Multitexter authenticates with account email+password IN the JSON body (no header/token auth), so this node uses authentication: none and reads MULTITEXTER_EMAIL/MULTITEXTER_PASSWORD from env instead of an n8n credential. recipients takes numbers WITHOUT a leading '+', comma-separated (a single number here since we send one member at a time).",
+      "position": [2440, 640],
+      "notes": "Confirmed working by a real test send on 2026-08-08 (real msgid/messages returned, HTTP 200, delivered to a live phone). Multitexter authenticates with account email+password IN the JSON body (no header/token auth), so this node uses authentication: none and reads MULTITEXTER_EMAIL/MULTITEXTER_PASSWORD from env instead of an n8n credential.",
       "parameters": {
         "method": "POST",
         "url": "https://app.multitexter.com/v2/app/sms",
@@ -461,11 +288,8 @@
       "name": "Normalize Delivery Response (Email)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        3160,
-        160
-      ],
-      "notes": "Brevo returns HTTP 201 with a top-level messageId on success (confirmed in their API reference); on failure it returns an error body with no messageId. n8n's HTTP Request node surfaces the parsed body here regardless of status code (errors aren't thrown by default), so presence of messageId is the success signal.",
+      "position": [2680, 160],
+      "notes": "Brevo returns HTTP 201 with a top-level messageId on success (confirmed by a real test send); on failure it returns an error body with no messageId. n8n's HTTP Request node surfaces the parsed body here regardless of status code, so presence of messageId is the success signal.",
       "parameters": {
         "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = !!(resp && resp.messageId);\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'email',\n    recipient_address: ctx.email,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.messageId ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
       }
@@ -475,13 +299,10 @@
       "name": "Normalize Delivery Response (WhatsApp)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        3160,
-        400
-      ],
-      "notes": "Same messageId success signal as the email node, per Brevo's API reference. Still UNVERIFIED end-to-end since a real send needs an approved WhatsApp template — see notes on the Send via Brevo WhatsApp node.",
+      "position": [2680, 400],
+      "notes": "UNVERIFIED: field names for Sendchamp's success indicator and message id are inferred from public docs; confirm against a real response (once a WhatsApp sender is connected) before relying on delivery status.",
       "parameters": {
-        "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = !!(resp && resp.messageId);\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'whatsapp',\n    recipient_address: ctx.phone_number,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.messageId ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
+        "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = resp && (resp.status === 'success' || resp.code === '00' || resp.success === true);\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'whatsapp',\n    recipient_address: ctx.phone_number,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.data?.id ?? resp?.data?.message_id ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
       }
     },
     {
@@ -489,11 +310,8 @@
       "name": "Normalize Delivery Response (SMS)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        3160,
-        640
-      ],
-      "notes": "Response shape confirmed against a real send on 2026-08-08: {status: 1, msgid, units, balance, msg, messages: {\"<phone-without-plus>\": \"<per-recipient-message-id>\"}}. status is a NUMBER (1 = success); a failure shape wasn't observed (no failed send captured), so the ok-check falls back to treating any non-1 status as failure. If you hit a real failure response, capture it and tighten this further.",
+      "position": [2680, 640],
+      "notes": "Response shape confirmed against a real send on 2026-08-08: {status: 1, msgid, units, balance, msg, messages: {\"<phone-without-plus>\": \"<per-recipient-message-id>\"}}. status is a NUMBER (1 = success); a failure shape wasn't observed, so the ok-check falls back to treating any non-1 status as failure.",
       "parameters": {
         "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = !!(resp && resp.status === 1);\nconst phoneKey = ctx.phone_number.replace('+', '');\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'sms',\n    recipient_address: ctx.phone_number,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.messages?.[phoneKey] ?? resp?.msgid ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
       }
@@ -503,37 +321,25 @@
       "name": "Merge Channel Results",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
-      "position": [
-        3400,
-        400
-      ],
-      "parameters": {
-        "mode": "append",
-        "numberInputs": 3
-      }
+      "position": [2920, 400],
+      "parameters": { "mode": "append", "numberInputs": 3 }
     },
     {
       "id": "insert-message-log",
       "name": "Insert Message Log",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [
-        3640,
-        400
-      ],
-      "notes": "Runs once per input item, i.e. once per (member, channel) pair \u2014 exactly the message_log grain.",
+      "position": [3160, 400],
+      "notes": "Runs once per input item, i.e. once per (member, channel) pair — exactly the message_log grain.",
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO message_log (broadcast_id, member_id, branch_id, channel, recipient_address, status, provider_message_id, error_detail, sent_at)\nVALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, CASE WHEN $6 = 'sent' THEN now() ELSE NULL END);",
+        "query": "SELECT insert_message_log($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8);",
         "options": {
           "queryReplacement": "={{ [$json.broadcast_id, $json.member_id, $json.branch_id, $json.channel, $json.recipient_address, $json.status, $json.provider_message_id, $json.error_detail] }}"
         }
       },
       "credentials": {
-        "postgres": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "NBA Postgres (App DB)"
-        }
+        "postgres": { "id": "REPLACE_WITH_CREDENTIAL_ID", "name": "NBA Postgres (App DB)" }
       }
     },
     {
@@ -541,11 +347,8 @@
       "name": "Wait",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [
-        3880,
-        400
-      ],
-      "notes": "Throttles batch-to-batch pacing against Brevo/Multitexter rate limits before looping back to Batch Members.",
+      "position": [3400, 400],
+      "notes": "Throttles batch-to-batch pacing against Brevo/Sendchamp/Multitexter rate limits before looping back to Batch Members.",
       "parameters": {
         "amount": "={{ Number($env.BROADCAST_BATCH_DELAY_SECONDS) || 2 }}",
         "unit": "seconds"
@@ -556,364 +359,63 @@
       "name": "Update Broadcast Status",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [
-        2200,
-        40
-      ],
+      "position": [1720, 40],
+      "notes": "Terminal node — there is no inbound HTTP request to respond to anymore (the old Respond to Admin GUI node is gone), admin-gui instead polls/queries broadcasts.status directly if it needs to show progress.",
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE broadcasts SET status = 'completed', completed_at = now() WHERE id = $1::uuid;",
+        "query": "SELECT complete_broadcast($1::uuid);",
         "options": {
-          "queryReplacement": "={{ [$('Create Broadcast Record').first().json.broadcast_id] }}"
+          "queryReplacement": "={{ [$('Claim Next Pending Broadcast').first().json.broadcast_id] }}"
         }
       },
       "credentials": {
-        "postgres": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "NBA Postgres (App DB)"
-        }
-      }
-    },
-    {
-      "id": "respond-to-admin-gui",
-      "name": "Respond to Admin GUI",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
-      "position": [
-        2440,
-        40
-      ],
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ { \"broadcast_id\": $('Create Broadcast Record').first().json.broadcast_id, \"status\": \"completed\" } }}",
-        "options": {}
+        "postgres": { "id": "REPLACE_WITH_CREDENTIAL_ID", "name": "NBA Postgres (App DB)" }
       }
     }
   ],
   "connections": {
-    "Broadcast Trigger": {
-      "main": [
-        [
-          {
-            "node": "Validate & Normalize Input",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Validate & Normalize Input": {
-      "main": [
-        [
-          {
-            "node": "Input Valid?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Input Valid?": {
-      "main": [
-        [
-          {
-            "node": "Fetch Sender Profile",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Respond Validation Error",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Fetch Sender Profile": {
-      "main": [
-        [
-          {
-            "node": "Create Broadcast Record",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Create Broadcast Record": {
-      "main": [
-        [
-          {
-            "node": "Data Source Router",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
+    "Schedule Trigger": { "main": [[{ "node": "Claim Next Pending Broadcast", "type": "main", "index": 0 }]] },
+    "Claim Next Pending Broadcast": { "main": [[{ "node": "Fetch Sender Profile", "type": "main", "index": 0 }]] },
+    "Fetch Sender Profile": { "main": [[{ "node": "Data Source Router", "type": "main", "index": 0 }]] },
     "Data Source Router": {
       "main": [
-        [
-          {
-            "node": "Fetch Members (Postgres)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Fetch Members (Sheets)",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Fetch Members (Postgres)", "type": "main", "index": 0 }],
+        [{ "node": "Fetch Members (Sheets)", "type": "main", "index": 0 }]
       ]
     },
-    "Fetch Members (Postgres)": {
-      "main": [
-        [
-          {
-            "node": "Merge Data Sources",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Fetch Members (Sheets)": {
-      "main": [
-        [
-          {
-            "node": "Merge Data Sources",
-            "type": "main",
-            "index": 1
-          }
-        ]
-      ]
-    },
-    "Merge Data Sources": {
-      "main": [
-        [
-          {
-            "node": "Filter by Audience Segment",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Filter by Audience Segment": {
-      "main": [
-        [
-          {
-            "node": "Batch Members",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
+    "Fetch Members (Postgres)": { "main": [[{ "node": "Merge Data Sources", "type": "main", "index": 0 }]] },
+    "Fetch Members (Sheets)": { "main": [[{ "node": "Merge Data Sources", "type": "main", "index": 1 }]] },
+    "Merge Data Sources": { "main": [[{ "node": "Filter by Audience Segment", "type": "main", "index": 0 }]] },
+    "Filter by Audience Segment": { "main": [[{ "node": "Batch Members", "type": "main", "index": 0 }]] },
     "Batch Members": {
       "main": [
-        [
-          {
-            "node": "Update Broadcast Status",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Personalize Message",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Update Broadcast Status", "type": "main", "index": 0 }],
+        [{ "node": "Personalize Message", "type": "main", "index": 0 }]
       ]
     },
-    "Personalize Message": {
-      "main": [
-        [
-          {
-            "node": "Select SMS Route",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
+    "Personalize Message": { "main": [[{ "node": "Select SMS Route", "type": "main", "index": 0 }]] },
     "Select SMS Route": {
       "main": [
         [
-          {
-            "node": "Channel: Email?",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Channel: WhatsApp?",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Channel: SMS?",
-            "type": "main",
-            "index": 0
-          }
+          { "node": "Channel: Email?", "type": "main", "index": 0 },
+          { "node": "Channel: WhatsApp?", "type": "main", "index": 0 },
+          { "node": "Channel: SMS?", "type": "main", "index": 0 }
         ]
       ]
     },
-    "Channel: Email?": {
-      "main": [
-        [
-          {
-            "node": "Send via Brevo Email",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        []
-      ]
-    },
-    "Channel: WhatsApp?": {
-      "main": [
-        [
-          {
-            "node": "Send via Brevo WhatsApp",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        []
-      ]
-    },
-    "Channel: SMS?": {
-      "main": [
-        [
-          {
-            "node": "Send via Multitexter SMS",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        []
-      ]
-    },
-    "Send via Brevo Email": {
-      "main": [
-        [
-          {
-            "node": "Normalize Delivery Response (Email)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send via Brevo WhatsApp": {
-      "main": [
-        [
-          {
-            "node": "Normalize Delivery Response (WhatsApp)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send via Multitexter SMS": {
-      "main": [
-        [
-          {
-            "node": "Normalize Delivery Response (SMS)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Normalize Delivery Response (Email)": {
-      "main": [
-        [
-          {
-            "node": "Merge Channel Results",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Normalize Delivery Response (WhatsApp)": {
-      "main": [
-        [
-          {
-            "node": "Merge Channel Results",
-            "type": "main",
-            "index": 1
-          }
-        ]
-      ]
-    },
-    "Normalize Delivery Response (SMS)": {
-      "main": [
-        [
-          {
-            "node": "Merge Channel Results",
-            "type": "main",
-            "index": 2
-          }
-        ]
-      ]
-    },
-    "Merge Channel Results": {
-      "main": [
-        [
-          {
-            "node": "Insert Message Log",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Insert Message Log": {
-      "main": [
-        [
-          {
-            "node": "Wait",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait": {
-      "main": [
-        [
-          {
-            "node": "Batch Members",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Update Broadcast Status": {
-      "main": [
-        [
-          {
-            "node": "Respond to Admin GUI",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    }
+    "Channel: Email?": { "main": [[{ "node": "Send via Brevo Email", "type": "main", "index": 0 }], []] },
+    "Channel: WhatsApp?": { "main": [[{ "node": "Send via Sendchamp WhatsApp", "type": "main", "index": 0 }], []] },
+    "Channel: SMS?": { "main": [[{ "node": "Send via Multitexter SMS", "type": "main", "index": 0 }], []] },
+    "Send via Brevo Email": { "main": [[{ "node": "Normalize Delivery Response (Email)", "type": "main", "index": 0 }]] },
+    "Send via Sendchamp WhatsApp": { "main": [[{ "node": "Normalize Delivery Response (WhatsApp)", "type": "main", "index": 0 }]] },
+    "Send via Multitexter SMS": { "main": [[{ "node": "Normalize Delivery Response (SMS)", "type": "main", "index": 0 }]] },
+    "Normalize Delivery Response (Email)": { "main": [[{ "node": "Merge Channel Results", "type": "main", "index": 0 }]] },
+    "Normalize Delivery Response (WhatsApp)": { "main": [[{ "node": "Merge Channel Results", "type": "main", "index": 1 }]] },
+    "Normalize Delivery Response (SMS)": { "main": [[{ "node": "Merge Channel Results", "type": "main", "index": 2 }]] },
+    "Merge Channel Results": { "main": [[{ "node": "Insert Message Log", "type": "main", "index": 0 }]] },
+    "Insert Message Log": { "main": [[{ "node": "Wait", "type": "main", "index": 0 }]] },
+    "Wait": { "main": [[{ "node": "Batch Members", "type": "main", "index": 0 }]] }
   },
   "active": false,
-  "settings": {
-    "executionOrder": "v1"
-  }
+  "settings": { "executionOrder": "v1" }
 }

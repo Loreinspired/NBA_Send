@@ -1,8 +1,11 @@
-# Delivery provider setup — Brevo (email + WhatsApp) + Multitexter (SMS)
+# Delivery provider setup — Brevo (email) + Sendchamp (WhatsApp) + Multitexter (SMS)
 
 This repo originally targeted Sendchamp as a single provider for all three
-channels. It now uses **Brevo** (free tier) for email and WhatsApp, and
-**Multitexter** for SMS — set up separately below. Every payload shape in
+channels, then briefly moved to Brevo for email + WhatsApp. **Brevo's
+WhatsApp product isn't available on its free tier**, discovered only after
+building against it — this repo now uses **Brevo** for email only,
+**Sendchamp** for WhatsApp only (already has a tested API key from earlier
+in this project), and **Multitexter** for SMS. Every payload shape in
 `n8n/workflows/broadcast-main.workflow.json` was built against each
 provider's publicly documented API; the response-shape parsing in the
 `Normalize Delivery Response *` nodes is flagged `UNVERIFIED` where the
@@ -45,40 +48,43 @@ email reached `loreadeogun@gmail.com` via `POST /v3/smtp/email`, returning
 HTTP 201 with a real `messageId`. The request shape in `Send via Brevo
 Email` is correct as written.
 
-## 2. Brevo — WhatsApp
+## 2. Sendchamp — WhatsApp
 
 **Meta's WhatsApp Business Platform requires an approved message template
 before any company-initiated message can be sent — this is a Meta-wide
 rule that applies no matter which BSP (Sendchamp, Brevo, Twilio, ...) you
-use.** Switching to Brevo does not skip this step.
+use.** Using Sendchamp does not skip this step.
 
-**Partially confirmed by real test calls**: `contactNumbers` must be an
-array of **strings**, not numbers, despite Brevo's own docs example
-showing bare numbers — a numeric value gets rejected with `"Invalid
-contactNumbers"`, a string value passes validation (already fixed in the
-workflow). Testing got as far as `"senderNumber is invalid"` with a
-placeholder value, which is expected — getting further requires a real
-WhatsApp number actually connected in Brevo's dashboard (step 1 below).
+Sendchamp's email/SMS products hit account-level billing issues earlier in
+this project unrelated to code correctness; its WhatsApp API auth and
+request shape were separately confirmed reachable, and its WhatsApp send
+only failed on "unable to get sender number" — i.e. blocked on step 1 below,
+not a plan/billing wall.
 
-1. Connect a WhatsApp Business number to Brevo (**Campaigns → WhatsApp →
-   Settings**).
+1. Connect a WhatsApp Business number to Sendchamp (dashboard → WhatsApp →
+   Settings) — this is the step that was previously blocking WhatsApp
+   entirely.
 2. Create a template with the quick-reply buttons you need (e.g. "RSVP
-   Yes" / "RSVP No", or "I've Paid") under **WhatsApp Templates**, and
-   submit it for Meta's review (usually minutes, sometimes up to 24h for
-   manual review).
-3. Once approved, note its numeric **Template ID** and set:
-   - `BREVO_WHATSAPP_SENDER_NUMBER` — the connected WhatsApp number
-   - `BREVO_WHATSAPP_TEMPLATE_ID` — the approved template's numeric ID
-4. Brevo's public API reference doesn't document how per-message template
-   parameters (e.g. substituting `{First_Name}`) are passed on the send
-   endpoint — the `Send via Brevo WhatsApp` node's `params` field is a best
-   guess. Send one real test message and check Brevo's dashboard/response
-   to confirm parameters actually substitute; adjust the node if not.
-5. Register the inbound webhook URL (`.../webhook/whatsapp-reply`) with
-   Brevo so button taps reach
-   `n8n/workflows/whatsapp-interactive-reply.workflow.json`. That
-   workflow's payload parsing is unverified pending a real inbound
-   message — capture one and correct the `Parse Interactive Reply` node.
+   Yes" / "RSVP No", or "I've Paid") and submit it for Meta's review
+   (usually minutes, sometimes up to 24h for manual review).
+3. Once approved, note its **template code** and set:
+   - `SENDCHAMP_WHATSAPP_SENDER_NUMBER` — the connected WhatsApp number
+   - `SENDCHAMP_WHATSAPP_TEMPLATE_CODE` — the approved template's code
+4. In n8n, create the `Sendchamp API` Header Auth credential (see
+   `n8n/credentials/README.md`) and attach it to `Send via Sendchamp
+   WhatsApp`.
+5. The `custom_data` param mapping (substituting `{First_Name}`,
+   `{Amount_Due}`) in the `Send via Sendchamp WhatsApp` node is
+   `UNVERIFIED` — built from Sendchamp's public docs only. Send one real
+   test message and check Sendchamp's dashboard/response to confirm
+   parameters actually substitute; adjust the node if not.
+6. Register `https://<admin-gui-host>/webhooks/sendchamp-whatsapp-reply/<WEBHOOK_SHARED_SECRET>`
+   as Sendchamp's inbound WhatsApp webhook URL so button taps reach
+   admin-gui's `/webhooks/sendchamp-whatsapp-reply/:secret` route (see
+   `admin-gui/server.js`). That route's payload parsing is unverified
+   pending a real inbound message — capture one and correct it (see
+   `n8n/workflows/superseded/README.md` for the reference logic it was
+   ported from).
 
 ## 3. Multitexter — SMS
 
@@ -121,13 +127,14 @@ WhatsApp number actually connected in Brevo's dashboard (step 1 below).
 
 ## 4. Delivery-status callbacks (email only, optional)
 
-Register `.../webhook/delivery-status` as Brevo's transactional webhook URL
-(**Transactional → Settings → Webhooks**, subscribed to at least
-`delivered` and the bounce events) so `message_log.status` updates from
-`sent` to `delivered`/`failed` for email. Brevo's webhook event shape
-(`event`, `email`, `message-id`) is confirmed against their public docs,
-but whether the `message-id` value there matches the `messageId` returned
-by the send API is unverified — check on a real send.
+Register `https://<admin-gui-host>/webhooks/brevo-delivery-status/<WEBHOOK_SHARED_SECRET>`
+as Brevo's transactional webhook URL (**Transactional → Settings →
+Webhooks**, subscribed to at least `delivered` and the bounce events) so
+`message_log.status` updates from `sent` to `delivered`/`failed` for email.
+Brevo's webhook event shape (`event`, `email`, `message-id`) is confirmed
+against their public docs, but whether the `message-id` value there matches
+the `messageId` returned by the send API is unverified — check on a real
+send.
 
 Multitexter's public docs don't mention a delivery-status webhook at all;
 SMS `message_log.status` will likely stay at `sent` indefinitely unless

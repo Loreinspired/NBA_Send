@@ -1,39 +1,73 @@
 # Deployment
 
-Two independent paths, per the brief. Neither was actually provisioned in
-this repo (no live Render/Railway/Supabase/Hetzner accounts available) — both
-sections below are checklists to execute manually. Local testing via
-`docker compose up` (see the root `README.md`) is what was actually run and
-verified.
+Two independent paths, per the brief. Local testing via `docker compose up`
+(see the root `README.md`) is what was verified first; Option A below (Render
++ Supabase) is what's actually running in production for the Ado-Ekiti
+branch, on the free tier of both platforms.
 
-## Option A — 100% free tier (Render or Railway + Supabase)
+## Option A — 100% free tier (Render + Supabase)
 
-No `docker-compose.yml` is used here — these platforms run one container per
-service, not a compose stack.
+No `docker-compose.yml` is used here — Render runs one service per container,
+not a compose stack. (Railway was evaluated first but its "free" tier is a
+time/credit-limited trial, not genuinely free long-term, so this project uses
+Render instead.)
 
-1. **Supabase**: create a free project. Note the connection string — this
-   single Postgres instance hosts both n8n's execution DB and the app schema
-   (same split as local dev: two databases, one instance). Run
-   `db/migrate.sh` once against it (locally, pointing `PGHOST`/etc at the
-   Supabase host) to apply `db/migrations/*.sql`, or run the SQL files
-   manually via Supabase's SQL editor in order.
-2. **n8n service**: create a new Web Service on Render/Railway from the
-   official `docker.n8n.io/n8nio/n8n` image (or point at this repo — no
-   custom Dockerfile is needed for n8n itself). Set the same `DB_*`,
-   `N8N_*`, `DATA_SOURCE`, `BREVO_*`, `MULTITEXTER_*` env vars as in
-   `.env.example`, pointing `DB_POSTGRESDB_HOST` etc at the Supabase
-   connection details. Render/Railway supply `N8N_HOST`/TLS automatically —
-   set `N8N_PROTOCOL=https` and `WEBHOOK_URL` to the platform-assigned
-   HTTPS URL.
+1. **Supabase**: create a free project. Its Session Pooler connection string
+   (port 5432, not the direct/IPv6-only connection) hosts both n8n's
+   execution DB and the app schema — same split as local dev: two databases,
+   one instance, except Supabase's free tier only allows the one default
+   `postgres` database, so `APP_DB_NAME` and n8n's `DB_POSTGRESDB_DATABASE`
+   both point at `postgres` rather than being separate. Run `db/migrate.sh`
+   once against it (locally, pointing `PGHOST`/etc at the pooler host) to
+   apply `db/migrations/*.sql` — this also creates the `nba_app_runtime` role
+   both services below connect as.
+2. **n8n service**: create a Web Service on Render from the official
+   `docker.n8n.io/n8nio/n8n` image. Set the same `DB_*`, `N8N_*`,
+   `DATA_SOURCE`, `BREVO_*` (email), `SENDCHAMP_*` (WhatsApp),
+   `MULTITEXTER_*` env vars as in `.env.example`, pointing
+   `DB_POSTGRESDB_HOST` etc at the Supabase pooler. Also add
+   `N8N_LISTEN_ADDRESS=0.0.0.0` (see the comment in `docker-compose.yml` for
+   why). Render supplies `N8N_HOST`/TLS automatically — set
+   `N8N_PROTOCOL=https` and `WEBHOOK_URL` to the platform-assigned HTTPS URL.
+   **Use Render's free `web_service` type, not `background_worker`** — the
+   free tier only allows the former, and n8n's Schedule Trigger (see below)
+   doesn't need an inbound HTTP listener to work, just to exist as a running
+   process.
 3. **admin-gui service**: create a second Web Service built from
-   `admin-gui/Dockerfile`. Set `N8N_WEBHOOK_BASE` to the n8n service's public
-   HTTPS URL + `/webhook`, plus the same `ADMIN_GUI_*`/`SESSION_SECRET`/
-   `N8N_WEBHOOK_SECRET` values as the n8n service.
-4. Import the workflows and create credentials exactly as in the local
-   quickstart (`n8n/README.md`), just against the hosted n8n instance.
-5. Cost note: both platforms' free tiers sleep/spin down idle services and
-   cap monthly hours — fine for a 300-member branch's occasional broadcasts,
-   worth monitoring as usage grows.
+   `admin-gui/Dockerfile`. Set `PGHOST`/`PGPORT`/`PGUSER=nba_app_runtime`/
+   `PGPASSWORD`/`PGDATABASE`/`PGSSLMODE=require` pointing at the same
+   Supabase pooler (real TLS verification — no shortcuts), plus
+   `WEBHOOK_SHARED_SECRET` and the `ADMIN_GUI_*`/`SESSION_SECRET` values.
+   admin-gui talks to Postgres directly; it no longer calls n8n at all.
+4. **n8n's production webhook registration is broken** (confirmed on this
+   deployment across three n8n versions and every activation method — see
+   `n8n/workflows/superseded/README.md`), so this architecture doesn't use
+   n8n Webhook triggers at all. `broadcast-main.workflow.json` uses a
+   Schedule Trigger instead (polls for pending broadcasts every ~25s); import
+   it and `broadcast-reaper.workflow.json` (a safety net that fails out any
+   broadcast stuck mid-pipeline for over 10 minutes) and activate both. Do
+   **not** import the three workflows under `n8n/workflows/superseded/` —
+   their logic already lives in admin-gui (`server.js`'s `/api/*` and
+   `/webhooks/*` routes).
+5. **Keep n8n awake**: Render's free web services spin down after ~15
+   minutes idle, which would silently stop the Schedule Trigger poll loop.
+   Set up a free external ping instead of paying for an always-on plan —
+   e.g. at [cron-job.org](https://cron-job.org), create a job that sends a
+   `GET` request to the n8n service's root HTTPS URL every 10 minutes. A
+   plain 200/404 response is enough to count as activity; no auth or payload
+   needed. After setting this up, confirm the Schedule Trigger is still
+   firing after 20+ idle minutes by checking n8n's Executions tab.
+6. Create the credentials listed in `n8n/credentials/README.md` (including
+   `NBA Postgres (App DB)` using the `nba_app_runtime` role, and `Sendchamp
+   API`) against the hosted n8n instance.
+7. Register `https://<admin-gui-host>/webhooks/brevo-delivery-status/<WEBHOOK_SHARED_SECRET>`
+   as Brevo's transactional webhook URL, and
+   `https://<admin-gui-host>/webhooks/sendchamp-whatsapp-reply/<WEBHOOK_SHARED_SECRET>`
+   as Sendchamp's WhatsApp inbound webhook URL, once a WhatsApp sender is
+   connected (see `docs/PROVIDERS_SETUP.md`).
+8. Cost note: Supabase's free tier and Render's free web services both have
+   usage caps — fine for a 300-member branch's occasional broadcasts, worth
+   monitoring as usage grows.
 
 ## Option B — production grade (<$5/mo VPS)
 

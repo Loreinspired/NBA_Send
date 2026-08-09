@@ -32,6 +32,7 @@ services:
       - PGUSER=${POSTGRES_USER}
       - PGPASSWORD=${POSTGRES_PASSWORD}
       - PGDATABASE=${APP_DB_NAME}
+      - NBA_APP_RUNTIME_PASSWORD=${NBA_APP_RUNTIME_PASSWORD}
     entrypoint: ["/bin/bash", "/db/migrate.sh"]
     restart: "no"
 
@@ -61,11 +62,12 @@ services:
       - BROADCAST_BATCH_DELAY_SECONDS=${BROADCAST_BATCH_DELAY_SECONDS:-2}
       - BREVO_API_KEY=${BREVO_API_KEY}
       - BREVO_SENDER_EMAIL=${BREVO_SENDER_EMAIL}
-      - BREVO_WHATSAPP_SENDER_NUMBER=${BREVO_WHATSAPP_SENDER_NUMBER}
-      - BREVO_WHATSAPP_TEMPLATE_ID=${BREVO_WHATSAPP_TEMPLATE_ID}
+      - SENDCHAMP_API_KEY=${SENDCHAMP_API_KEY}
+      - SENDCHAMP_API_BASE_URL=${SENDCHAMP_API_BASE_URL:-https://api.sendchamp.com/api/v1}
+      - SENDCHAMP_WHATSAPP_SENDER_NUMBER=${SENDCHAMP_WHATSAPP_SENDER_NUMBER}
+      - SENDCHAMP_WHATSAPP_TEMPLATE_CODE=${SENDCHAMP_WHATSAPP_TEMPLATE_CODE}
       - MULTITEXTER_EMAIL=${MULTITEXTER_EMAIL}
       - MULTITEXTER_PASSWORD=${MULTITEXTER_PASSWORD}
-      - N8N_WEBHOOK_SECRET=${N8N_WEBHOOK_SECRET}
     ports:
       - "${N8N_PORT:-5678}:5678"
     depends_on:
@@ -81,8 +83,17 @@ services:
     build: ./admin-gui
     restart: unless-stopped
     environment:
-      - N8N_WEBHOOK_BASE=${N8N_WEBHOOK_BASE:-http://n8n:5678/webhook}
-      - N8N_WEBHOOK_SECRET=${N8N_WEBHOOK_SECRET}
+      # admin-gui talks to Postgres directly as nba_app_runtime (see
+      # db/migrations/010_nba_app_runtime_role.sql) instead of proxying
+      # through n8n webhooks, which were found to be broken in production —
+      # see docs/DEPLOYMENT.md.
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGUSER=nba_app_runtime
+      - PGPASSWORD=${NBA_APP_RUNTIME_PASSWORD}
+      - PGDATABASE=${APP_DB_NAME}
+      - PGSSLMODE=disable
+      - WEBHOOK_SHARED_SECRET=${WEBHOOK_SHARED_SECRET}
       - ADMIN_GUI_USER=${ADMIN_GUI_USER}
       - ADMIN_GUI_PASSWORD=${ADMIN_GUI_PASSWORD}
       - SESSION_SECRET=${SESSION_SECRET}
@@ -91,4 +102,7 @@ services:
     ports:
       - "${ADMIN_GUI_PORT:-3000}:3000"
     depends_on:
-      - n8n
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully

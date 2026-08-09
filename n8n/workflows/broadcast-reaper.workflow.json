@@ -1,0 +1,49 @@
+{
+  "name": "NBA Send - Broadcast Reaper",
+  "nodes": [
+    {
+      "id": "reaper-schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-200, 260],
+      "notes": "Runs every 5 minutes. Safety net for broadcast-main.workflow.json: that workflow has no per-node error branches, so a node failure mid-pipeline (a crashed HTTP call, a Postgres timeout) leaves the claimed row stuck in 'in_progress' forever with no visibility, since the poll loop never revisits rows it isn't currently holding. This workflow finds any broadcast that has been 'in_progress' for longer than a single pipeline run could plausibly take and marks it 'failed' with a diagnosable reason, instead of leaving it silently stuck.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": 5 }
+          ]
+        }
+      }
+    },
+    {
+      "id": "reap-stuck-broadcasts",
+      "name": "Reap Stuck Broadcasts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [40, 260],
+      "notes": "10 minutes is well beyond how long even a large batched broadcast should take per poll interval (25s ticks, small per-batch waits) - if a row is still 'in_progress' past that, its pipeline execution crashed or hung, not just running long. Calls reap_stuck_broadcasts() (db/migrations/012_rls_helper_functions.sql) rather than a set_config CTE — the CTE trick doesn't actually work (an unreferenced CTE never runs at all, and the planner can freely evaluate RLS's USING clause before a referenced one; confirmed by direct testing) — so RLS context-setting and the query run as sequential statements inside one PL/pgSQL function body instead, the only ordering Postgres actually guarantees. 'ALL' is used unconditionally since only one branch exists today.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM reap_stuck_broadcasts();",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "NBA Postgres (App DB)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Reap Stuck Broadcasts", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
