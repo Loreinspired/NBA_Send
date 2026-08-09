@@ -1,0 +1,8 @@
+# Runs db/diagnose_connection.sh — see that file's header comment. Separate
+# from db/Dockerfile (which always runs migrate.sh) so this stays an
+# explicit, opt-in diagnostic rather than something that could accidentally
+# run during a normal migration deploy.
+FROM postgres:16
+COPY . /db
+WORKDIR /db
+ENTRYPOINT ["/db/diagnose_connection.sh"]
