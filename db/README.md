@@ -19,6 +19,9 @@ migration framework, to keep the dependency surface minimal (only the stock
 - `migrations/013_sender_profile_and_member_management_functions.sql` – RLS-safe functions backing admin-gui's "define a sender profile" and "import contacts from a CSV" features (`upsert_sender_profile`, `set_sender_profile_active`, `list_sender_profiles_for_management`, `bulk_upsert_members`)
 - `migrations/014_member_biodata_fields.sql` – extends `members` with the fields NBA's actual "Bio Data" Google Form roster collects beyond the Phase-1 broadcast-only template (title, SCN, year of call, NBA Section/Forum membership, emergency contact, employer/designation/sector)
 - `migrations/015_bulk_upsert_members_biodata.sql` – replaces `bulk_upsert_members()` from 013 to also write the fields added in 014
+- `migrations/016_custom_contact_groups.sql` – `members.custom_groups TEXT[]` (reusable free-form tags), `broadcasts.target_groups`/`target_member_ids`, and a new `'custom'` `audience_segment_enum` value, backing admin-gui's custom broadcast targeting
+- `migrations/017_custom_targeting_functions.sql` – extends `claim_next_pending_broadcast()`, `fetch_members_by_branch()`, and `create_broadcast()` to carry the fields added in 016 through the broadcast pipeline
+- `migrations/018_contact_management_functions.sql` – RLS-safe functions backing admin-gui's Contacts tab (`list_members`, `create_member`, `update_member`, `set_member_active`, `list_distinct_custom_groups`)
 
 ## Running migrations
 

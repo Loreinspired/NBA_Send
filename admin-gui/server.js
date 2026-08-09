@@ -234,12 +234,13 @@ app.patch('/api/sender-profiles/:id/active', requireAuth, async (req, res) => {
   }
 });
 
-const VALID_AUDIENCE_SEGMENTS = ['all_members', 'executive_committee', 'financial_members'];
+const VALID_AUDIENCE_SEGMENTS = ['all_members', 'executive_committee', 'financial_members', 'custom'];
 const VALID_CHANNELS = ['email', 'whatsapp', 'sms'];
 
 app.post('/api/broadcast', requireAuth, async (req, res) => {
   const branchSlug = req.body.branch_slug || DEFAULT_BRANCH_SLUG;
-  const { sender_profile_id, audience_segment, channels, message_template, is_urgent } = req.body || {};
+  const { sender_profile_id, audience_segment, channels, message_template, is_urgent, target_groups, target_member_ids } =
+    req.body || {};
 
   const errors = [];
   if (!sender_profile_id) errors.push('sender_profile_id is required');
@@ -251,6 +252,11 @@ app.post('/api/broadcast', requireAuth, async (req, res) => {
   }
   if (!message_template || typeof message_template !== 'string' || !message_template.trim()) {
     errors.push('message_template is required');
+  }
+  const groups = Array.isArray(target_groups) ? target_groups.filter((g) => g && String(g).trim()) : [];
+  const memberIds = Array.isArray(target_member_ids) ? target_member_ids.filter((id) => id) : [];
+  if (audience_segment === 'custom' && groups.length === 0 && memberIds.length === 0) {
+    errors.push('audience_segment "custom" requires at least one of target_groups or target_member_ids');
   }
   if (errors.length > 0) {
     return res.status(400).json({ error: 'Validation failed', messages: errors });
@@ -271,13 +277,177 @@ app.post('/api/broadcast', requireAuth, async (req, res) => {
     // status defaults to 'pending' — n8n's Schedule Trigger poll loop
     // (n8n/workflows/broadcast-main.workflow.json) claims and processes it
     // within one ~25s poll interval; there is no synchronous send here.
+    // target_groups/target_member_ids are null (not empty arrays) for
+    // non-custom segments — matches 016_custom_contact_groups.sql's "null
+    // for every non-custom broadcast" convention.
     const { rows } = await pool.query(
-      'SELECT * FROM create_broadcast($1, $2, $3, $4, $5, $6, $7)',
-      [branch.id, sender_profile_id, audience_segment, channels, message_template, !!is_urgent, req.session.username]
+      'SELECT * FROM create_broadcast($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+      [
+        branch.id,
+        sender_profile_id,
+        audience_segment,
+        channels,
+        message_template,
+        !!is_urgent,
+        req.session.username,
+        audience_segment === 'custom' && groups.length > 0 ? groups : null,
+        audience_segment === 'custom' && memberIds.length > 0 ? memberIds : null,
+      ]
     );
     res.status(201).json({ broadcast_id: rows[0].broadcast_id, status: rows[0].status });
   } catch (err) {
     res.status(502).json({ error: 'Could not create broadcast', detail: err.message });
+  }
+});
+
+const VALID_COMMITTEE_ROLES = ['none', 'executive', 'branch_officer'];
+
+// Contacts management: full CRUD backing admin-gui's Contacts tab (separate
+// from the CSV bulk-import routes above, which stay the fast path for a
+// full roster refresh). "Delete" is a soft deactivate — see
+// db/migrations/018_contact_management_functions.sql's header comment for
+// why a hard DELETE isn't safe here (message_log.member_id has no ON
+// DELETE CASCADE).
+app.get('/api/members', requireAuth, async (req, res) => {
+  const branchSlug = req.query.branch_slug || DEFAULT_BRANCH_SLUG;
+  try {
+    const { rows } = await pool.query('SELECT * FROM list_members($1)', [branchSlug]);
+    res.json({ members: rows });
+  } catch (err) {
+    res.status(502).json({ error: 'Could not load members', detail: err.message });
+  }
+});
+
+app.get('/api/custom-groups', requireAuth, async (req, res) => {
+  const branchSlug = req.query.branch_slug || DEFAULT_BRANCH_SLUG;
+  try {
+    const { rows } = await pool.query('SELECT * FROM list_distinct_custom_groups($1)', [branchSlug]);
+    res.json({ groups: rows.map((r) => r.group_name) });
+  } catch (err) {
+    res.status(502).json({ error: 'Could not load custom groups', detail: err.message });
+  }
+});
+
+function validateMemberInput(body) {
+  const errors = [];
+  const first_name = (body.first_name || '').trim();
+  const last_name = (body.last_name || '').trim();
+  const email = (body.email || '').trim();
+  const phoneRaw = (body.phone_number || '').trim();
+  const financial_status = (body.financial_status || 'unknown').trim();
+  const committee_role = (body.committee_role || 'none').trim();
+  const amount_due = body.amount_due === '' || body.amount_due == null ? 0 : Number(body.amount_due);
+  const custom_groups = Array.isArray(body.custom_groups)
+    ? body.custom_groups.map((g) => String(g).trim()).filter(Boolean)
+    : [];
+
+  if (!first_name) errors.push('first_name is required');
+  if (!last_name) errors.push('last_name is required');
+  const phone_number = normalizeNgPhone(phoneRaw);
+  if (!phoneRaw) errors.push('phone_number is required');
+  else if (!phone_number) errors.push(`phone_number "${phoneRaw}" is not a recognizable Nigerian number (expected +234XXXXXXXXXX)`);
+  if (email && !email.includes('@')) errors.push('email does not look like a valid address');
+  if (!VALID_FINANCIAL_STATUSES.includes(financial_status)) {
+    errors.push(`financial_status must be one of: ${VALID_FINANCIAL_STATUSES.join(', ')}`);
+  }
+  if (!VALID_COMMITTEE_ROLES.includes(committee_role)) {
+    errors.push(`committee_role must be one of: ${VALID_COMMITTEE_ROLES.join(', ')} (or omitted)`);
+  }
+  if (Number.isNaN(amount_due) || amount_due < 0) errors.push('amount_due must be a non-negative number');
+
+  return {
+    errors,
+    values: { first_name, last_name, email, phone_number, financial_status, committee_role, amount_due, custom_groups },
+  };
+}
+
+app.post('/api/members', requireAuth, async (req, res) => {
+  const branchSlug = req.body.branch_slug || DEFAULT_BRANCH_SLUG;
+  const { errors, values } = validateMemberInput(req.body || {});
+  if (errors.length > 0) {
+    return res.status(400).json({ error: 'Validation failed', messages: errors });
+  }
+
+  try {
+    const { rows: branchRows } = await pool.query(
+      'SELECT id FROM branches WHERE slug = $1 AND is_active = true',
+      [branchSlug]
+    );
+    const branch = branchRows[0];
+    if (!branch) {
+      return res.status(400).json({ error: `Unknown branch: ${branchSlug}` });
+    }
+
+    const { rows } = await pool.query(
+      'SELECT * FROM create_member($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+      [
+        branch.id,
+        values.first_name,
+        values.last_name,
+        values.email,
+        values.phone_number,
+        values.financial_status,
+        values.committee_role,
+        values.amount_due,
+        values.custom_groups,
+        req.session.username,
+      ]
+    );
+    res.status(201).json({ member: rows[0] });
+  } catch (err) {
+    res.status(502).json({ error: 'Could not create member', detail: err.message });
+  }
+});
+
+app.put('/api/members/:id', requireAuth, async (req, res) => {
+  const { errors, values } = validateMemberInput(req.body || {});
+  if (errors.length > 0) {
+    return res.status(400).json({ error: 'Validation failed', messages: errors });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM update_member($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+      [
+        req.params.id,
+        values.first_name,
+        values.last_name,
+        values.email,
+        values.phone_number,
+        values.financial_status,
+        values.committee_role,
+        values.amount_due,
+        values.custom_groups,
+      ]
+    );
+    if (!rows[0]) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+    res.json({ member: rows[0] });
+  } catch (err) {
+    res.status(502).json({ error: 'Could not update member', detail: err.message });
+  }
+});
+
+app.delete('/api/members/:id', requireAuth, async (req, res) => {
+  try {
+    await pool.query('SELECT set_member_active($1, $2)', [req.params.id, false]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: 'Could not deactivate member', detail: err.message });
+  }
+});
+
+app.patch('/api/members/:id/active', requireAuth, async (req, res) => {
+  const { is_active } = req.body || {};
+  if (typeof is_active !== 'boolean') {
+    return res.status(400).json({ error: 'is_active must be a boolean' });
+  }
+  try {
+    await pool.query('SELECT set_member_active($1, $2)', [req.params.id, is_active]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: 'Could not update member', detail: err.message });
   }
 });
 

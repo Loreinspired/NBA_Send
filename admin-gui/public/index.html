@@ -32,6 +32,7 @@
       <button type="button" class="nav-btn active" data-target="broadcastSection">Broadcast</button>
       <button type="button" class="nav-btn" data-target="senderProfilesSection">Sender Profiles</button>
       <button type="button" class="nav-btn" data-target="importContactsSection">Import Contacts</button>
+      <button type="button" class="nav-btn" data-target="contactsSection">Contacts</button>
     </nav>
 
     <section id="broadcastSection" class="hidden">
@@ -48,7 +49,22 @@
           <option value="all_members">All Members</option>
           <option value="executive_committee">Executive Committee Only</option>
           <option value="financial_members">Financial Members Only</option>
+          <option value="custom">Custom Selection…</option>
         </select>
+
+        <fieldset id="customTargetFieldset" class="hidden">
+          <legend>Custom Selection</legend>
+          <p class="hint">A member is included if they're in any checked group, or individually selected below. At least one is required.</p>
+          <div>
+            <label class="inline-label">Groups</label>
+            <div id="customGroupsList" class="checkbox-grid"><em>Loading…</em></div>
+          </div>
+          <div>
+            <label for="customMemberSearch" class="inline-label">Individually selected contacts</label>
+            <input type="text" id="customMemberSearch" placeholder="Search by name or phone…" />
+            <div id="customMemberList" class="checkbox-grid scrollable"><em>Loading…</em></div>
+          </div>
+        </fieldset>
 
         <fieldset>
           <legend>3. Delivery Channel</legend>
@@ -144,6 +160,67 @@ Regards,
         <button type="button" id="csvConfirmBtn">Confirm Import</button>
         <p id="csvConfirmResult" class="hidden"></p>
       </div>
+    </section>
+
+    <section id="contactsSection" class="hidden">
+      <div class="panel">
+        <h2>Contacts</h2>
+        <p class="hint">Add, edit, or deactivate individual contacts, and tag them with custom groups (e.g. "Debtors Q1", "Conference 2026") for targeted broadcasts. For a full roster refresh, use Import Contacts instead.</p>
+        <div class="contacts-toolbar">
+          <input type="text" id="contactsSearch" placeholder="Search by name, phone, or group…" />
+          <button type="button" id="contactAddBtn" class="secondary-btn">Add Contact</button>
+        </div>
+        <div class="table-scroll">
+          <table id="contactsTable">
+            <thead>
+              <tr><th>Name</th><th>Phone</th><th>Email</th><th>Financial</th><th>Role</th><th>Groups</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody><tr><td colspan="8">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <form id="contactForm" class="panel hidden">
+        <h3 id="contactFormTitle">Add Contact</h3>
+        <input type="hidden" id="c_id" />
+
+        <label for="c_first_name">First Name</label>
+        <input id="c_first_name" type="text" required />
+
+        <label for="c_last_name">Last Name</label>
+        <input id="c_last_name" type="text" required />
+
+        <label for="c_email">Email (optional)</label>
+        <input id="c_email" type="text" placeholder="name@example.com" />
+
+        <label for="c_phone_number">Phone Number</label>
+        <input id="c_phone_number" type="text" required placeholder="08012345678 or +2348012345678" />
+
+        <label for="c_financial_status">Financial Status</label>
+        <select id="c_financial_status">
+          <option value="unknown">Unknown</option>
+          <option value="financial">Financial</option>
+          <option value="non_financial">Non-financial</option>
+        </select>
+
+        <label for="c_committee_role">Committee Role</label>
+        <select id="c_committee_role">
+          <option value="none">None</option>
+          <option value="executive">Executive</option>
+          <option value="branch_officer">Branch Officer</option>
+        </select>
+
+        <label for="c_amount_due">Amount Due</label>
+        <input id="c_amount_due" type="text" inputmode="decimal" placeholder="0" />
+
+        <label for="c_custom_groups">Custom Groups (comma-separated)</label>
+        <input id="c_custom_groups" type="text" list="customGroupsDatalist" placeholder="Debtors Q1, Conference 2026" />
+        <datalist id="customGroupsDatalist"></datalist>
+
+        <button type="submit" id="contactSaveBtn">Save</button>
+        <button type="button" id="contactCancelBtn" class="secondary-btn">Cancel</button>
+        <p id="contactFormResult" class="hidden"></p>
+      </form>
     </section>
   </main>
 
