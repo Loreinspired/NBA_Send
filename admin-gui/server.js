@@ -59,6 +59,20 @@ const pool = new Pool({
 });
 pool.on('error', (err) => console.error('Unexpected idle Postgres client error', err));
 
+// Defense-in-depth: Express 4 (what this project pins) does not catch a
+// synchronous throw inside an `async (req, res) => {}` route handler — it
+// becomes a rejected Promise nothing awaits, and Node's default behavior
+// for an unhandled rejection is to crash the whole process, not just fail
+// that one request. Confirmed for real this session: a type mismatch in
+// one route's validation logic took down admin-gui entirely until this was
+// added. Every route handler should still have its own try/catch (this
+// is a backstop, not a substitute — an unhandled rejection here means a
+// request got no response at all, just a logged error), but one gap
+// shouldn't be able to take the whole app down for every user.
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection (a request likely failed without responding):', err);
+});
+
 // Every tenant-table query goes through a PL/pgSQL function
 // (db/migrations/012_rls_helper_functions.sql) that sets the RLS branch
 // context via set_config and then runs the real query, both as sequential
@@ -274,40 +288,180 @@ const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 
 
 const PHONE_E164_NG = /^\+234[0-9]{10}$/;
 const VALID_FINANCIAL_STATUSES = ['financial', 'non_financial', 'unknown'];
+const VALID_SECTORS = ['private_practice', 'ministry_civil_service', 'corporate_in_house_judiciary', 'academia'];
+const CURRENT_YEAR = new Date().getFullYear();
 
-// Accepts the documented header spelling (First_Name, Last_Name, Email,
+// Accepts both the simple Phase-1 template (First_Name, Last_Name, Email,
 // Phone_Number, Financial_Status — docs/samples/nba_members_template.md)
-// but normalizes case/spacing/punctuation first, so a Sheet exported
-// without manually lowercasing headers first (the old manual \copy
-// procedure's step 2 — docs/MIGRATION.md) still imports without edits.
+// and NBA's richer "Bio Data" Google Form export (Title/Prefix, Middle
+// Name, Supreme Court Number, Year of Call, NBA Section/Forum membership,
+// emergency contact, employer — the fields added in
+// db/migrations/014_member_biodata_fields.sql), keyed by normalized header
+// text so capitalization/spacing differences never matter.
 function normalizeHeader(h) {
   return String(h || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
-const CANONICAL_HEADERS = ['first_name', 'last_name', 'email', 'phone_number', 'financial_status'];
+// Each canonical field maps to every header spelling known to name it,
+// across both source formats. Only first_name/last_name/phone_number are
+// actually required — every biodata field is optional, so a plain
+// Phase-1-template CSV still imports exactly as before.
+const HEADER_ALIASES = {
+  first_name: ['first_name'],
+  last_name: ['last_name', 'last_name_surname'],
+  email: ['email', 'email_address'],
+  phone_number: ['phone_number', 'primary_phone_number'],
+  financial_status: ['financial_status'],
+  title: ['title_prefix'],
+  middle_name: ['middle_name'],
+  professional_suffix: ['professional_suffix_honours'],
+  scn: ['supreme_court_number_scn'],
+  year_of_call: ['year_of_call_to_the_nigerian_bar'],
+  nba_section: ['nba_section_membership'],
+  nba_forum: ['nba_specialized_forum_membership'],
+  emergency_contact_name: ['emergency_contact_next_of_kin_full_name'],
+  emergency_contact_relationship: ['emergency_contact_relationship'],
+  emergency_contact_phone: ['emergency_contact_phone_number'],
+  sector: ['primary_sector_of_practice'],
+  employer_address: ['address_of_law_firm_head_office_employer'],
+};
 
-// Validates one row against the same rules the database enforces
-// (phone_e164_ng CHECK constraint, financial_status_enum), so bad rows are
-// caught and explained here rather than surfacing as an opaque Postgres
-// error that aborts the whole batch.
-function validateRow(raw, rowNumber, seenPhones) {
+// NBA's Bio Data form branches into four employment-sector sub-sections
+// (Private Practice / Ministry / Corporate-Judiciary / Academia), each
+// asking an "employer name" and "designation" question under a different
+// label — Google Forms exports every branch's columns for every response,
+// blank except whichever branch the respondent actually used. These lists
+// are tried in order and the first non-empty value wins, which also
+// transparently coalesces the CSV's several literal duplicate-named
+// columns (e.g. "Designation" appears four times, "Address of Law Firm...
+// Employer" twice) as a side effect, since duplicates share one alias.
+const EMPLOYER_NAME_ALIASES = [
+  'name_of_law_firm',
+  'name_of_ministry_department',
+  'name_of_organisation_institution_judiciary',
+  'name_of_academic_institution',
+];
+const DESIGNATION_ALIASES = ['designation', 'academic_rank'];
+
+const SECTOR_MAP = {
+  'private practice': 'private_practice',
+  'ministry/civil service': 'ministry_civil_service',
+  'corporate in-house / judiciary': 'corporate_in_house_judiciary',
+  'corporate in-house/judiciary': 'corporate_in_house_judiciary',
+  academia: 'academia',
+};
+
+// Returns every column index whose normalized header matches one of the
+// given aliases, in the order they appear in the file.
+function findColumnIndices(headerRow, aliases) {
+  const indices = [];
+  headerRow.forEach((h, i) => {
+    if (aliases.includes(normalizeHeader(h))) indices.push(i);
+  });
+  return indices;
+}
+
+function firstNonEmpty(dataRow, indices) {
+  for (const i of indices) {
+    const v = (dataRow[i] ?? '').trim();
+    if (v) return v;
+  }
+  return '';
+}
+
+// Real submissions arrive in every format Nigerian phone numbers get
+// typed in: 11-digit with leading 0 (08012345678), missing the leading 0
+// (8012345678), full E.164 without the + (2348012345678), or with stray
+// spaces (0801 234 5678). Normalizes all of those to the
+// phone_e164_ng-constraint-satisfying +234XXXXXXXXXX form. Returns null
+// (not a guess) for anything that isn't recognizably a Nigerian number at
+// all — e.g. a genuine other-country number — rather than mangling it into
+// a wrong +234 value.
+function normalizeNgPhone(raw) {
+  if (!raw) return null;
+  const s = String(raw).replace(/[\s\-().]/g, '');
+  if (/^\+234[0-9]{10}$/.test(s)) return s;
+  if (/^234[0-9]{10}$/.test(s)) return `+${s}`;
+  if (/^0[0-9]{10}$/.test(s)) return `+234${s.slice(1)}`;
+  if (/^[0-9]{10}$/.test(s)) return `+234${s}`;
+  return null;
+}
+
+// NBA Section/Forum membership are comma-separated multi-select answers in
+// the raw CSV (a member can belong to more than one at once); "None
+// currently" is the form's explicit "nothing selected" answer, not a real
+// membership. validateRow() runs on two different input shapes — raw CSV
+// strings on /preview, and this function's own already-parsed array output
+// coming back from the client on /confirm's re-validation pass — so this
+// must accept both without throwing (an unhandled exception here previously
+// crashed the whole process, not just the request, since nothing caught
+// it — confirmed by reproducing it against this session's real import).
+function parseMultiValue(raw) {
+  if (Array.isArray(raw)) return raw.filter((s) => s && !/^none(\s+currently)?$/i.test(s));
+  if (!raw) return [];
+  return String(raw)
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s && !/^none(\s+currently)?$/i.test(s));
+}
+
+// Real rosters collected via Google Forms routinely contain the same
+// person more than once — someone resubmits to fix a typo, since Forms
+// has no "edit my earlier response" affordance. Building this map first
+// (last row number seen per phone, across the *whole* file) rather than
+// checking "have I seen this phone before?" row-by-row during a single
+// forward pass means the *latest* submission wins and imports, and the
+// earlier one(s) are the ones excluded — not the other way around. This
+// matters for real accuracy, not just tidiness: confirmed against this
+// project's actual data that a resubmission's later row corrected a typo
+// in an earlier one (a contact number missing its leading 0) — keeping
+// the first occurrence instead would have kept the typo'd version.
+function buildLastOccurrenceByPhone(items) {
+  const map = new Map();
+  for (const { rowNumber, phoneRaw } of items) {
+    const normalized = normalizeNgPhone((phoneRaw || '').trim());
+    if (normalized) map.set(normalized, rowNumber); // later overwrites earlier
+  }
+  return map;
+}
+
+// Validates + normalizes one row against the same rules the database
+// enforces (phone_e164_ng CHECK constraint, the enum types), so bad rows
+// are caught and explained here rather than surfacing as an opaque
+// Postgres error that aborts the whole batch. `errors` block the row from
+// importing; `warnings` don't (e.g. a Year_of_Call that's technically
+// present but out of a sane range still gets recorded — it isn't
+// broadcast-critical, and refusing to import someone's whole record over
+// one likely-typo'd non-essential field would be worse than importing it
+// with a flagged oddity).
+function validateRow(raw, rowNumber, lastOccurrenceByPhone) {
   const errors = [];
+  const warnings = [];
   const first_name = (raw.first_name || '').trim();
   const last_name = (raw.last_name || '').trim();
   const email = (raw.email || '').trim();
-  const phone_number = (raw.phone_number || '').trim();
+  const phoneRaw = (raw.phone_number || '').trim();
   const financialStatusRaw = (raw.financial_status || '').trim().toLowerCase();
   const financial_status = financialStatusRaw || 'unknown';
 
+  let phone_number = '';
+  if (!phoneRaw) {
+    errors.push('Phone_Number is required');
+  } else {
+    const normalized = normalizeNgPhone(phoneRaw);
+    if (!normalized) {
+      errors.push(`Phone_Number "${phoneRaw}" is not a recognizable Nigerian number (expected +234XXXXXXXXXX)`);
+    } else {
+      phone_number = normalized;
+      const lastRow = lastOccurrenceByPhone.get(phone_number);
+      if (lastRow !== undefined && lastRow !== rowNumber) {
+        errors.push(`Superseded by a later submission with the same phone number — row ${lastRow} will be imported instead`);
+      }
+    }
+  }
+
   if (!first_name) errors.push('First_Name is required');
   if (!last_name) errors.push('Last_Name is required');
-  if (!phone_number) {
-    errors.push('Phone_Number is required');
-  } else if (!PHONE_E164_NG.test(phone_number)) {
-    errors.push('Phone_Number must be in the form +234XXXXXXXXXX (10 digits after +234, no spaces)');
-  } else if (seenPhones.has(phone_number)) {
-    errors.push(`Duplicate Phone_Number within this file (also on row ${seenPhones.get(phone_number)})`);
-  }
   if (financialStatusRaw && !VALID_FINANCIAL_STATUSES.includes(financial_status)) {
     errors.push(`Financial_Status must be one of: ${VALID_FINANCIAL_STATUSES.join(', ')} (or left blank)`);
   }
@@ -315,8 +469,30 @@ function validateRow(raw, rowNumber, seenPhones) {
     errors.push('Email does not look like a valid address (leave blank if unknown, don’t write "N/A")');
   }
 
-  if (errors.length === 0 && phone_number) {
-    seenPhones.set(phone_number, rowNumber);
+  let year_of_call = null;
+  const yocRaw = String(raw.year_of_call || '').trim();
+  if (yocRaw) {
+    const parsed = parseInt(yocRaw, 10);
+    if (Number.isNaN(parsed)) {
+      warnings.push(`Year of Call "${yocRaw}" is not a number — left blank`);
+    } else {
+      year_of_call = parsed;
+      if (parsed < 1900 || parsed > CURRENT_YEAR + 1) {
+        warnings.push(`Year of Call ${parsed} looks out of range — kept as-is, worth double-checking`);
+      }
+    }
+  }
+
+  const sectorRaw = (raw.sector || '').trim().toLowerCase();
+  const employer_name = (raw.employer_name || '').trim();
+  let sector = sectorRaw ? SECTOR_MAP[sectorRaw] || null : null;
+  if (!sector && !sectorRaw && employer_name) {
+    // Blank "Primary Sector of Practice" with an employer/law-firm name
+    // present means the respondent used the form's default first branch
+    // (Private Practice), which doesn't separately label its own sector.
+    sector = 'private_practice';
+  } else if (sectorRaw && !sector) {
+    warnings.push(`Sector "${raw.sector}" not recognized — left blank`);
   }
 
   return {
@@ -324,11 +500,38 @@ function validateRow(raw, rowNumber, seenPhones) {
     first_name,
     last_name,
     email,
-    phone_number,
+    phone_number: phone_number || phoneRaw,
     financial_status,
+    title: (raw.title || '').trim(),
+    middle_name: (raw.middle_name || '').trim(),
+    professional_suffix: (raw.professional_suffix || '').trim(),
+    scn: (raw.scn || '').trim(),
+    year_of_call,
+    nba_section: parseMultiValue(raw.nba_section),
+    nba_forum: parseMultiValue(raw.nba_forum),
+    emergency_contact_name: (raw.emergency_contact_name || '').trim(),
+    emergency_contact_relationship: (raw.emergency_contact_relationship || '').trim(),
+    emergency_contact_phone: (raw.emergency_contact_phone || '').trim(),
+    employer_name,
+    designation: (raw.designation || '').trim(),
+    sector: sector || '',
+    employer_address: (raw.employer_address || '').trim(),
     valid: errors.length === 0,
     errors,
+    warnings,
   };
+}
+
+// Extracts one canonical-keyed raw-value object per data row from a
+// headerless (columns:false) parse, via the alias/coalescing rules above.
+function extractRow(headerRow, dataRow) {
+  const raw = {};
+  for (const [canonical, aliases] of Object.entries(HEADER_ALIASES)) {
+    raw[canonical] = firstNonEmpty(dataRow, findColumnIndices(headerRow, aliases));
+  }
+  raw.employer_name = firstNonEmpty(dataRow, findColumnIndices(headerRow, EMPLOYER_NAME_ALIASES));
+  raw.designation = firstNonEmpty(dataRow, findColumnIndices(headerRow, DESIGNATION_ALIASES));
+  return raw;
 }
 
 app.post('/api/members/import/preview', requireAuth, csvUpload.single('csv_file'), async (req, res) => {
@@ -336,27 +539,26 @@ app.post('/api/members/import/preview', requireAuth, csvUpload.single('csv_file'
     return res.status(400).json({ error: 'No file uploaded (expected field name csv_file)' });
   }
 
-  let records;
+  let table;
   try {
-    records = parseCsv(req.file.buffer, { columns: true, skip_empty_lines: true, trim: true, bom: true });
+    // columns:false (raw arrays, not header-keyed objects): this file
+    // format can have several columns sharing the exact same header text
+    // (see EMPLOYER_NAME_ALIASES's comment) — csv-parse's columns:true
+    // mode would silently overwrite earlier same-named columns' values
+    // with later ones, losing data. Working from raw arrays plus our own
+    // index-based lookup (findColumnIndices/firstNonEmpty) avoids that.
+    table = parseCsv(req.file.buffer, { columns: false, skip_empty_lines: true, trim: true, bom: true });
   } catch (err) {
     return res.status(400).json({ error: 'Could not parse CSV', detail: err.message });
   }
-  if (records.length === 0) {
+  if (table.length < 2) {
     return res.status(400).json({ error: 'CSV has no data rows' });
   }
 
-  // Re-key each record's columns to the canonical names via normalized
-  // header matching (see normalizeHeader above) before validating.
-  const sourceHeaders = Object.keys(records[0]);
-  const headerMap = {}; // canonical -> original key in the parsed record
-  for (const h of sourceHeaders) {
-    const norm = normalizeHeader(h);
-    if (CANONICAL_HEADERS.includes(norm) && !(norm in headerMap)) {
-      headerMap[norm] = h;
-    }
-  }
-  const missingHeaders = CANONICAL_HEADERS.filter((h) => h !== 'financial_status' && !(h in headerMap));
+  const [headerRow, ...dataRows] = table;
+  const missingHeaders = ['first_name', 'last_name', 'phone_number'].filter(
+    (canonical) => findColumnIndices(headerRow, HEADER_ALIASES[canonical]).length === 0
+  );
   if (missingHeaders.length > 0) {
     return res.status(400).json({
       error: 'CSV is missing required columns',
@@ -364,14 +566,16 @@ app.post('/api/members/import/preview', requireAuth, csvUpload.single('csv_file'
     });
   }
 
-  const seenPhones = new Map();
-  const rows = records.map((record, i) => {
-    const raw = {};
-    for (const canonical of CANONICAL_HEADERS) {
-      raw[canonical] = headerMap[canonical] ? record[headerMap[canonical]] : '';
-    }
-    return validateRow(raw, i + 2, seenPhones); // +2: 1-indexed, plus the header row
-  });
+  let rows;
+  try {
+    const extracted = dataRows.map((dataRow, i) => ({ rowNumber: i + 2, raw: extractRow(headerRow, dataRow) }));
+    const lastOccurrenceByPhone = buildLastOccurrenceByPhone(
+      extracted.map(({ rowNumber, raw }) => ({ rowNumber, phoneRaw: raw.phone_number }))
+    );
+    rows = extracted.map(({ rowNumber, raw }) => validateRow(raw, rowNumber, lastOccurrenceByPhone));
+  } catch (err) {
+    return res.status(400).json({ error: 'Could not process CSV rows', detail: err.message });
+  }
 
   const validCount = rows.filter((r) => r.valid).length;
   res.json({ rows, total: rows.length, valid_count: validCount, invalid_count: rows.length - validCount });
@@ -384,17 +588,26 @@ app.post('/api/members/import/confirm', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'rows must be a non-empty array' });
   }
 
-  // Re-validate server-side rather than trusting the client to only send
-  // back what the preview marked valid — the preview step is a UX
-  // convenience, not the security boundary.
-  const seenPhones = new Map();
-  const revalidated = rows.map((r, i) => validateRow(r, r.row_number || i + 2, seenPhones));
-  const invalid = revalidated.filter((r) => !r.valid);
-  if (invalid.length > 0) {
-    return res.status(400).json({ error: 'Some rows failed validation', rows: invalid });
-  }
-
   try {
+    // Re-validate server-side rather than trusting the client to only send
+    // back what the preview marked valid — the preview step is a UX
+    // convenience, not the security boundary. Inside the try block, not
+    // before it: Express 4 does not catch a synchronous throw from inside
+    // an async route handler (fixed in Express 5, not what this project
+    // pins) — an uncaught one here previously took down the whole process,
+    // not just this request, reproduced for real against this session's
+    // import (a non-string year_of_call from the client broke a .trim()
+    // call upstream in validateRow).
+    const withRowNumbers = rows.map((r, i) => ({ row: r, rowNumber: r.row_number || i + 2 }));
+    const lastOccurrenceByPhone = buildLastOccurrenceByPhone(
+      withRowNumbers.map(({ row, rowNumber }) => ({ rowNumber, phoneRaw: row.phone_number }))
+    );
+    const revalidated = withRowNumbers.map(({ row, rowNumber }) => validateRow(row, rowNumber, lastOccurrenceByPhone));
+    const invalid = revalidated.filter((r) => !r.valid);
+    if (invalid.length > 0) {
+      return res.status(400).json({ error: 'Some rows failed validation', rows: invalid });
+    }
+
     const { rows: branchRows } = await pool.query(
       'SELECT id FROM branches WHERE slug = $1 AND is_active = true',
       [branchSlug]
@@ -410,6 +623,20 @@ app.post('/api/members/import/confirm', requireAuth, async (req, res) => {
       email: r.email,
       phone_number: r.phone_number,
       financial_status: r.financial_status,
+      title: r.title || null,
+      middle_name: r.middle_name || null,
+      professional_suffix: r.professional_suffix || null,
+      scn: r.scn || null,
+      year_of_call: r.year_of_call || null,
+      nba_section: r.nba_section || [],
+      nba_forum: r.nba_forum || [],
+      emergency_contact_name: r.emergency_contact_name || null,
+      emergency_contact_relationship: r.emergency_contact_relationship || null,
+      emergency_contact_phone: r.emergency_contact_phone || null,
+      employer_name: r.employer_name || null,
+      designation: r.designation || null,
+      sector: VALID_SECTORS.includes(r.sector) ? r.sector : null,
+      employer_address: r.employer_address || null,
     }));
 
     const { rows: results } = await pool.query('SELECT * FROM bulk_upsert_members($1, $2::jsonb, $3)', [

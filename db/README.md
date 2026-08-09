@@ -17,6 +17,8 @@ migration framework, to keep the dependency surface minimal (only the stock
 - `migrations/011_broadcasts_updated_at.sql` – `broadcasts.updated_at`, used by `n8n/workflows/broadcast-reaper.workflow.json` to detect broadcasts stuck mid-pipeline
 - `migrations/012_rls_helper_functions.sql` – PL/pgSQL functions that every RLS-scoped query in n8n and admin-gui now goes through (see "RLS and connection pooling" below) — **required**, not optional
 - `migrations/013_sender_profile_and_member_management_functions.sql` – RLS-safe functions backing admin-gui's "define a sender profile" and "import contacts from a CSV" features (`upsert_sender_profile`, `set_sender_profile_active`, `list_sender_profiles_for_management`, `bulk_upsert_members`)
+- `migrations/014_member_biodata_fields.sql` – extends `members` with the fields NBA's actual "Bio Data" Google Form roster collects beyond the Phase-1 broadcast-only template (title, SCN, year of call, NBA Section/Forum membership, emergency contact, employer/designation/sector)
+- `migrations/015_bulk_upsert_members_biodata.sql` – replaces `bulk_upsert_members()` from 013 to also write the fields added in 014
 
 ## Running migrations
 
