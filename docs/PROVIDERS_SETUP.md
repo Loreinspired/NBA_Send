@@ -40,12 +40,25 @@ infrastructure with a fixed egress IP (e.g. a VPS, Option B).
    `n8n/credentials/README.md`) with header name `api-key` (not
    `Authorization: Bearer ...` — Brevo's own header name).
 
+**Confirmed working end-to-end by a real test send on 2026-08-09**: a real
+email reached `loreadeogun@gmail.com` via `POST /v3/smtp/email`, returning
+HTTP 201 with a real `messageId`. The request shape in `Send via Brevo
+Email` is correct as written.
+
 ## 2. Brevo — WhatsApp
 
 **Meta's WhatsApp Business Platform requires an approved message template
 before any company-initiated message can be sent — this is a Meta-wide
 rule that applies no matter which BSP (Sendchamp, Brevo, Twilio, ...) you
 use.** Switching to Brevo does not skip this step.
+
+**Partially confirmed by real test calls**: `contactNumbers` must be an
+array of **strings**, not numbers, despite Brevo's own docs example
+showing bare numbers — a numeric value gets rejected with `"Invalid
+contactNumbers"`, a string value passes validation (already fixed in the
+workflow). Testing got as far as `"senderNumber is invalid"` with a
+placeholder value, which is expected — getting further requires a real
+WhatsApp number actually connected in Brevo's dashboard (step 1 below).
 
 1. Connect a WhatsApp Business number to Brevo (**Campaigns → WhatsApp →
    Settings**).

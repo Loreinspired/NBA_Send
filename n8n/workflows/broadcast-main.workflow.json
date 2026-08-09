@@ -418,7 +418,7 @@
         2920,
         400
       ],
-      "notes": "Endpoint/body base shape confirmed against developers.brevo.com/reference/sendwhatsappmessage. UNVERIFIED: Brevo's docs don't detail how per-message template parameters (e.g. {First_Name}) are passed on this endpoint — 'params' below is a best guess pending a real send; check the response/Brevo dashboard and adjust if params aren't substituted. Interactive RSVP/payment buttons still require a Meta-approved WhatsApp template regardless of provider (BREVO_WHATSAPP_TEMPLATE_ID is a placeholder until one is approved in the Brevo dashboard). contactNumbers takes numbers WITHOUT a leading '+'.",
+      "notes": "Endpoint/body base shape confirmed against developers.brevo.com/reference/sendwhatsappmessage AND against a real test call on 2026-08-08: contactNumbers must be an array of STRINGS (not numbers — the docs' bare-number example is misleading, confirmed by trial: a numeric value gets 'Invalid contactNumbers', a string value passes validation), without a leading '+'. Reached as far as 'senderNumber is invalid' with a placeholder sender, which requires a real WhatsApp number connected in Brevo's dashboard to get further. UNVERIFIED: Brevo's docs don't detail how per-message template parameters (e.g. {First_Name}) are passed on this endpoint — 'params' below is a best guess pending a real send with an approved template; check the response/Brevo dashboard and adjust if params aren't substituted. Interactive RSVP/payment buttons still require a Meta-approved WhatsApp template regardless of provider (BREVO_WHATSAPP_TEMPLATE_ID is a placeholder until one is approved in the Brevo dashboard).",
       "parameters": {
         "method": "POST",
         "url": "https://api.brevo.com/v3/whatsapp/sendMessage",
@@ -426,7 +426,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {\n  \"contactNumbers\": [ Number($json.phone_number.replace('+', '')) ],\n  \"senderNumber\": $env.BREVO_WHATSAPP_SENDER_NUMBER,\n  \"templateId\": Number($env.BREVO_WHATSAPP_TEMPLATE_ID),\n  \"params\": { \"First_Name\": $json.first_name, \"Amount_Due\": String($json.amount_due ?? '') }\n} }}",
+        "jsonBody": "={{ {\n  \"contactNumbers\": [ $json.phone_number.replace('+', '') ],\n  \"senderNumber\": $env.BREVO_WHATSAPP_SENDER_NUMBER,\n  \"templateId\": Number($env.BREVO_WHATSAPP_TEMPLATE_ID),\n  \"params\": { \"First_Name\": $json.first_name, \"Amount_Due\": String($json.amount_due ?? '') }\n} }}",
         "options": {}
       },
       "credentials": {
