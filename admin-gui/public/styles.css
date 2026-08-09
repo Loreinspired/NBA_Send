@@ -33,11 +33,126 @@ main {
   padding: 0 1rem;
 }
 
-form {
+form,
+.panel {
   background: white;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1.5rem;
+}
+
+.panel + .panel,
+.panel + form,
+form + .panel {
+  margin-top: 1rem;
+}
+
+nav#mainNav {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.nav-btn {
+  background: white;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.nav-btn.active {
+  background: var(--nba-green);
+  border-color: var(--nba-green);
+  color: white;
+}
+
+.hint {
+  color: #555;
+  font-size: 0.9rem;
+  margin-top: 0;
+}
+
+.secondary-btn {
+  margin-top: 1.5rem;
+  margin-left: 0.5rem;
+  background: white;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.secondary-btn:hover { background: var(--bg); }
+
+.sender-profile-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sender-profile-row:last-child { border-bottom: none; }
+
+.sender-profile-row .role-name {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.sender-profile-row .profile-summary {
+  color: #555;
+  font-size: 0.9rem;
+  white-space: pre-line;
+}
+
+.sender-profile-row .not-defined {
+  color: #888;
+  font-style: italic;
+}
+
+.badge {
+  display: inline-block;
+  border-radius: 3px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.badge.active { background: #e6f4ea; color: var(--nba-green); }
+.badge.inactive { background: #f0f0f0; color: #777; }
+
+.table-scroll {
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+th, td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+th { background: var(--bg); }
+
+tr.invalid-row td { background: #fdecea; }
+
+.row-errors {
+  color: var(--error);
+  font-size: 0.8rem;
 }
 
 h2 { margin-top: 0; color: var(--nba-green); }

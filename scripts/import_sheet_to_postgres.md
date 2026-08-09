@@ -1,7 +1,15 @@
 # Sheets → Postgres import procedure (detailed)
 
-Companion to `docs/MIGRATION.md`'s quick version. This is a documented
-manual/CLI procedure, not a script, because it runs rarely (once per branch
+**For most imports, use admin-gui's Import Contacts tab instead** — it runs
+the same validation described below (phone format, financial status,
+duplicate detection) automatically and shows per-row errors before
+committing, with no CLI/database access needed. See `docs/MIGRATION.md`.
+
+This CLI procedure remains useful as: (a) reference for exactly what "valid"
+means, since admin-gui enforces the same rules; (b) a fallback when no
+admin-gui deployment exists yet (e.g. the very first import, before anyone
+has logged in); or (c) if CLI access is simply preferred. It's a documented
+manual procedure, not a script, because it runs rarely (once per branch
 onboarding) and touches production member data — a human should review the
 CSV before it's imported.
 

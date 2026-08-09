@@ -16,6 +16,7 @@ migration framework, to keep the dependency surface minimal (only the stock
 - `migrations/010_nba_app_runtime_role.sql` – the least-privilege runtime role n8n and admin-gui actually connect as (its password is set separately by `migrate.sh`, not in this file)
 - `migrations/011_broadcasts_updated_at.sql` – `broadcasts.updated_at`, used by `n8n/workflows/broadcast-reaper.workflow.json` to detect broadcasts stuck mid-pipeline
 - `migrations/012_rls_helper_functions.sql` – PL/pgSQL functions that every RLS-scoped query in n8n and admin-gui now goes through (see "RLS and connection pooling" below) — **required**, not optional
+- `migrations/013_sender_profile_and_member_management_functions.sql` – RLS-safe functions backing admin-gui's "define a sender profile" and "import contacts from a CSV" features (`upsert_sender_profile`, `set_sender_profile_active`, `list_sender_profiles_for_management`, `bulk_upsert_members`)
 
 ## Running migrations
 

@@ -74,9 +74,16 @@ workflow JSON (which independently validates and imports correctly) — see
 `n8n/README.md` for the full account and what to try if you hit it too.
 
 **Not verifiable without live third-party accounts** (documented as
-follow-up steps in the relevant doc): real Brevo/Multitexter sends, WhatsApp
-template approval, Google Sheets OAuth, and Render/Railway/Supabase/Hetzner
-provisioning. See `docs/PROVIDERS_SETUP.md` and `docs/DEPLOYMENT.md`.
+follow-up steps in the relevant doc): WhatsApp template approval, Google
+Sheets OAuth. See `docs/PROVIDERS_SETUP.md` and `docs/DEPLOYMENT.md`.
+
+admin-gui's sender-profile management (define/redefine/deactivate the
+PRO, Branch Chairman, and Secretariat profiles) and CSV contact import
+(`docs/MIGRATION.md`) were both verified end-to-end this pass — real
+Postgres, real RLS, and a real browser driving the actual UI (login →
+edit a profile → save → toggle it inactive; upload the sample roster →
+preview with validation errors surfaced per row → confirm → rows
+land correctly in `members`).
 
 ## Further reading
 

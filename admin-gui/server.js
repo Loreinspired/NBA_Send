@@ -1,6 +1,8 @@
 const path = require('path');
 const express = require('express');
 const session = require('express-session');
+const multer = require('multer');
+const { parse: parseCsv } = require('csv-parse/sync');
 const { Pool } = require('pg');
 
 const {
@@ -129,6 +131,95 @@ app.get('/api/sender-profiles', requireAuth, async (req, res) => {
   }
 });
 
+const VALID_SENDER_ROLES = ['pro', 'branch_chairman', 'secretariat'];
+
+// Includes inactive profiles (unlike GET /api/sender-profiles above, which
+// only returns active ones for the broadcast composer's dropdown) so the
+// management page can show every role's current state.
+app.get('/api/sender-profiles/manage', requireAuth, async (req, res) => {
+  const branchSlug = req.query.branch_slug || DEFAULT_BRANCH_SLUG;
+  try {
+    const { rows } = await pool.query('SELECT * FROM list_sender_profiles_for_management($1)', [branchSlug]);
+    res.json({ sender_profiles: rows });
+  } catch (err) {
+    res.status(502).json({ error: 'Could not load sender profiles', detail: err.message });
+  }
+});
+
+// Upsert: defines a role's profile if it doesn't exist yet, redefines it if
+// it does (sender_profiles has a UNIQUE(branch_id, role) constraint — only
+// one PRO/Chairman/Secretariat profile per branch, so "add" and "edit" are
+// the same operation here).
+app.post('/api/sender-profiles', requireAuth, async (req, res) => {
+  const branchSlug = req.body.branch_slug || DEFAULT_BRANCH_SLUG;
+  const { role, display_name, signature_block, contact_phone, contact_email } = req.body || {};
+
+  const errors = [];
+  if (!VALID_SENDER_ROLES.includes(role)) {
+    errors.push(`role must be one of: ${VALID_SENDER_ROLES.join(', ')}`);
+  }
+  if (!display_name || typeof display_name !== 'string' || !display_name.trim()) {
+    errors.push('display_name is required');
+  }
+  if (!signature_block || typeof signature_block !== 'string' || !signature_block.trim()) {
+    errors.push('signature_block is required');
+  }
+  if (errors.length > 0) {
+    return res.status(400).json({ error: 'Validation failed', messages: errors });
+  }
+
+  try {
+    const { rows: branchRows } = await pool.query(
+      'SELECT id FROM branches WHERE slug = $1 AND is_active = true',
+      [branchSlug]
+    );
+    const branch = branchRows[0];
+    if (!branch) {
+      return res.status(400).json({ error: `Unknown branch: ${branchSlug}` });
+    }
+
+    const { rows } = await pool.query('SELECT * FROM upsert_sender_profile($1, $2, $3, $4, $5, $6)', [
+      branch.id,
+      role,
+      display_name,
+      signature_block,
+      contact_phone || null,
+      contact_email || null,
+    ]);
+    // upsert_sender_profile()'s columns are out_-prefixed (works around a
+    // Postgres ON CONFLICT/OUT-parameter name collision — see
+    // db/migrations/013_.../.sql) — stripped back off here so that detail
+    // doesn't leak into the HTTP response shape.
+    const r = rows[0];
+    res.status(200).json({
+      sender_profile: {
+        id: r.out_id,
+        role: r.out_role,
+        display_name: r.out_display_name,
+        signature_block: r.out_signature_block,
+        contact_phone: r.out_contact_phone,
+        contact_email: r.out_contact_email,
+        is_active: r.out_is_active,
+      },
+    });
+  } catch (err) {
+    res.status(502).json({ error: 'Could not save sender profile', detail: err.message });
+  }
+});
+
+app.patch('/api/sender-profiles/:id/active', requireAuth, async (req, res) => {
+  const { is_active } = req.body || {};
+  if (typeof is_active !== 'boolean') {
+    return res.status(400).json({ error: 'is_active must be a boolean' });
+  }
+  try {
+    await pool.query('SELECT set_sender_profile_active($1, $2)', [req.params.id, is_active]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: 'Could not update sender profile', detail: err.message });
+  }
+});
+
 const VALID_AUDIENCE_SEGMENTS = ['all_members', 'executive_committee', 'financial_members'];
 const VALID_CHANNELS = ['email', 'whatsapp', 'sms'];
 
@@ -173,6 +264,164 @@ app.post('/api/broadcast', requireAuth, async (req, res) => {
     res.status(201).json({ broadcast_id: rows[0].broadcast_id, status: rows[0].status });
   } catch (err) {
     res.status(502).json({ error: 'Could not create broadcast', detail: err.message });
+  }
+});
+
+// Memory storage: CSV rosters are at most a few thousand rows, well under
+// the 5MB cap — no need to touch disk for something this small and
+// short-lived (parsed once, then discarded).
+const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+const PHONE_E164_NG = /^\+234[0-9]{10}$/;
+const VALID_FINANCIAL_STATUSES = ['financial', 'non_financial', 'unknown'];
+
+// Accepts the documented header spelling (First_Name, Last_Name, Email,
+// Phone_Number, Financial_Status — docs/samples/nba_members_template.md)
+// but normalizes case/spacing/punctuation first, so a Sheet exported
+// without manually lowercasing headers first (the old manual \copy
+// procedure's step 2 — docs/MIGRATION.md) still imports without edits.
+function normalizeHeader(h) {
+  return String(h || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+const CANONICAL_HEADERS = ['first_name', 'last_name', 'email', 'phone_number', 'financial_status'];
+
+// Validates one row against the same rules the database enforces
+// (phone_e164_ng CHECK constraint, financial_status_enum), so bad rows are
+// caught and explained here rather than surfacing as an opaque Postgres
+// error that aborts the whole batch.
+function validateRow(raw, rowNumber, seenPhones) {
+  const errors = [];
+  const first_name = (raw.first_name || '').trim();
+  const last_name = (raw.last_name || '').trim();
+  const email = (raw.email || '').trim();
+  const phone_number = (raw.phone_number || '').trim();
+  const financialStatusRaw = (raw.financial_status || '').trim().toLowerCase();
+  const financial_status = financialStatusRaw || 'unknown';
+
+  if (!first_name) errors.push('First_Name is required');
+  if (!last_name) errors.push('Last_Name is required');
+  if (!phone_number) {
+    errors.push('Phone_Number is required');
+  } else if (!PHONE_E164_NG.test(phone_number)) {
+    errors.push('Phone_Number must be in the form +234XXXXXXXXXX (10 digits after +234, no spaces)');
+  } else if (seenPhones.has(phone_number)) {
+    errors.push(`Duplicate Phone_Number within this file (also on row ${seenPhones.get(phone_number)})`);
+  }
+  if (financialStatusRaw && !VALID_FINANCIAL_STATUSES.includes(financial_status)) {
+    errors.push(`Financial_Status must be one of: ${VALID_FINANCIAL_STATUSES.join(', ')} (or left blank)`);
+  }
+  if (email && !email.includes('@')) {
+    errors.push('Email does not look like a valid address (leave blank if unknown, don’t write "N/A")');
+  }
+
+  if (errors.length === 0 && phone_number) {
+    seenPhones.set(phone_number, rowNumber);
+  }
+
+  return {
+    row_number: rowNumber,
+    first_name,
+    last_name,
+    email,
+    phone_number,
+    financial_status,
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+app.post('/api/members/import/preview', requireAuth, csvUpload.single('csv_file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded (expected field name csv_file)' });
+  }
+
+  let records;
+  try {
+    records = parseCsv(req.file.buffer, { columns: true, skip_empty_lines: true, trim: true, bom: true });
+  } catch (err) {
+    return res.status(400).json({ error: 'Could not parse CSV', detail: err.message });
+  }
+  if (records.length === 0) {
+    return res.status(400).json({ error: 'CSV has no data rows' });
+  }
+
+  // Re-key each record's columns to the canonical names via normalized
+  // header matching (see normalizeHeader above) before validating.
+  const sourceHeaders = Object.keys(records[0]);
+  const headerMap = {}; // canonical -> original key in the parsed record
+  for (const h of sourceHeaders) {
+    const norm = normalizeHeader(h);
+    if (CANONICAL_HEADERS.includes(norm) && !(norm in headerMap)) {
+      headerMap[norm] = h;
+    }
+  }
+  const missingHeaders = CANONICAL_HEADERS.filter((h) => h !== 'financial_status' && !(h in headerMap));
+  if (missingHeaders.length > 0) {
+    return res.status(400).json({
+      error: 'CSV is missing required columns',
+      detail: `Expected columns for: ${missingHeaders.join(', ')} (case/spacing-insensitive — see docs/samples/nba_members_template.md)`,
+    });
+  }
+
+  const seenPhones = new Map();
+  const rows = records.map((record, i) => {
+    const raw = {};
+    for (const canonical of CANONICAL_HEADERS) {
+      raw[canonical] = headerMap[canonical] ? record[headerMap[canonical]] : '';
+    }
+    return validateRow(raw, i + 2, seenPhones); // +2: 1-indexed, plus the header row
+  });
+
+  const validCount = rows.filter((r) => r.valid).length;
+  res.json({ rows, total: rows.length, valid_count: validCount, invalid_count: rows.length - validCount });
+});
+
+app.post('/api/members/import/confirm', requireAuth, async (req, res) => {
+  const branchSlug = req.body.branch_slug || DEFAULT_BRANCH_SLUG;
+  const rows = Array.isArray(req.body.rows) ? req.body.rows : null;
+  if (!rows || rows.length === 0) {
+    return res.status(400).json({ error: 'rows must be a non-empty array' });
+  }
+
+  // Re-validate server-side rather than trusting the client to only send
+  // back what the preview marked valid — the preview step is a UX
+  // convenience, not the security boundary.
+  const seenPhones = new Map();
+  const revalidated = rows.map((r, i) => validateRow(r, r.row_number || i + 2, seenPhones));
+  const invalid = revalidated.filter((r) => !r.valid);
+  if (invalid.length > 0) {
+    return res.status(400).json({ error: 'Some rows failed validation', rows: invalid });
+  }
+
+  try {
+    const { rows: branchRows } = await pool.query(
+      'SELECT id FROM branches WHERE slug = $1 AND is_active = true',
+      [branchSlug]
+    );
+    const branch = branchRows[0];
+    if (!branch) {
+      return res.status(400).json({ error: `Unknown branch: ${branchSlug}` });
+    }
+
+    const payload = revalidated.map((r) => ({
+      first_name: r.first_name,
+      last_name: r.last_name,
+      email: r.email,
+      phone_number: r.phone_number,
+      financial_status: r.financial_status,
+    }));
+
+    const { rows: results } = await pool.query('SELECT * FROM bulk_upsert_members($1, $2::jsonb, $3)', [
+      branch.id,
+      JSON.stringify(payload),
+      req.session.username,
+    ]);
+    const added = results.filter((r) => r.out_was_new).length;
+    const updated = results.length - added;
+    res.json({ imported: results.length, added, updated });
+  } catch (err) {
+    res.status(502).json({ error: 'Could not import contacts', detail: err.message });
   }
 });
 

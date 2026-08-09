@@ -28,6 +28,12 @@
       </form>
     </section>
 
+    <nav id="mainNav" class="hidden">
+      <button type="button" class="nav-btn active" data-target="broadcastSection">Broadcast</button>
+      <button type="button" class="nav-btn" data-target="senderProfilesSection">Sender Profiles</button>
+      <button type="button" class="nav-btn" data-target="importContactsSection">Import Contacts</button>
+    </nav>
+
     <section id="broadcastSection" class="hidden">
       <form id="broadcastForm">
         <h2>Compose a broadcast</h2>
@@ -79,6 +85,65 @@ Regards,
         <button type="submit" id="broadcastBtn">Broadcast</button>
         <p id="broadcastResult" class="hidden"></p>
       </form>
+    </section>
+
+    <section id="senderProfilesSection" class="hidden">
+      <div class="panel">
+        <h2>Sender Profiles</h2>
+        <p class="hint">Each role (PRO, Branch Chairman, Secretariat) has one branding/signature profile. Define or redefine one below — it becomes selectable in the broadcast composer once saved.</p>
+        <div id="senderProfilesList"></div>
+      </div>
+
+      <form id="senderProfileForm" class="panel hidden">
+        <h3 id="senderProfileFormTitle">Define sender profile</h3>
+        <input type="hidden" id="sp_role" />
+
+        <label for="sp_display_name">Display Name</label>
+        <input id="sp_display_name" type="text" required placeholder="Barr. Adeola Fashola, Public Relations Officer" />
+
+        <label for="sp_signature_block">Signature Block</label>
+        <textarea id="sp_signature_block" rows="4" required placeholder="— Barr. Adeola Fashola&#10;Public Relations Officer, NBA Ado-Ekiti Branch&#10;0803 000 0001 | pro@nba-adoekiti.org"></textarea>
+
+        <label for="sp_contact_phone">Contact Phone (optional)</label>
+        <input id="sp_contact_phone" type="text" placeholder="+2348030000001" />
+
+        <label for="sp_contact_email">Contact Email (optional)</label>
+        <input id="sp_contact_email" type="text" placeholder="pro@nba-adoekiti.org" />
+
+        <button type="submit" id="senderProfileSaveBtn">Save</button>
+        <button type="button" id="senderProfileCancelBtn" class="secondary-btn">Cancel</button>
+        <p id="senderProfileResult" class="hidden"></p>
+      </form>
+    </section>
+
+    <section id="importContactsSection" class="hidden">
+      <div class="panel">
+        <h2>Import Contacts</h2>
+        <p class="hint">
+          In Google Sheets: <strong>File → Download → Comma-separated values (.csv)</strong>,
+          then upload it here. Expected columns: First_Name, Last_Name, Email, Phone_Number, Financial_Status
+          (header capitalization/spacing doesn't matter). Matches existing contacts by phone number and
+          updates them; new phone numbers are added. See
+          <code>docs/samples/nba_members_template.csv</code> for an example.
+        </p>
+        <input type="file" id="csvFileInput" accept=".csv,text/csv" />
+        <button type="button" id="csvPreviewBtn">Preview</button>
+        <p id="csvPreviewError" class="error hidden"></p>
+      </div>
+
+      <div id="csvPreviewPanel" class="panel hidden">
+        <h3 id="csvPreviewSummary"></h3>
+        <div class="table-scroll">
+          <table id="csvPreviewTable">
+            <thead>
+              <tr><th>Row</th><th>First Name</th><th>Last Name</th><th>Email</th><th>Phone Number</th><th>Financial Status</th><th>Status</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <button type="button" id="csvConfirmBtn">Confirm Import</button>
+        <p id="csvConfirmResult" class="hidden"></p>
+      </div>
     </section>
   </main>
 
