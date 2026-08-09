@@ -36,7 +36,11 @@ Render instead.)
 3. **admin-gui service**: create a second Web Service built from
    `admin-gui/Dockerfile`. Set `PGHOST`/`PGPORT`/`PGUSER=nba_app_runtime`/
    `PGPASSWORD`/`PGDATABASE`/`PGSSLMODE=require` pointing at the same
-   Supabase pooler (real TLS verification — no shortcuts), plus
+   Supabase pooler (TLS-encrypted; certificate-chain verification is off —
+   `rejectUnauthorized: false` — confirmed necessary by a real failed
+   connection against Supabase's pooler from Render, "self-signed
+   certificate in certificate chain," matching what n8n's own Postgres
+   credential against this same database already needed), plus
    `WEBHOOK_SHARED_SECRET` and the `ADMIN_GUI_*`/`SESSION_SECRET` values.
    admin-gui talks to Postgres directly; it no longer calls n8n at all.
 4. **n8n's production webhook registration is broken** (confirmed on this

@@ -38,13 +38,22 @@ for (const [name, value] of Object.entries({
 // role (see db/migrations/010_nba_app_runtime_role.sql) instead of proxying
 // through n8n webhooks, which were found to be broken in production
 // (n8n's webhook registration silently fails — see docs/DEPLOYMENT.md).
+//
+// rejectUnauthorized: false, not true: confirmed by a real failed connection
+// attempt against Supabase's Session Pooler from Render ("self-signed
+// certificate in certificate chain"), and matches what n8n's own Postgres
+// credential against this same database already had to use ("ssl: allow",
+// not strict verification) earlier in this project. The connection is
+// still TLS-encrypted in transit; this only skips certificate-chain
+// verification, a common tradeoff for managed poolers whose cert chain
+// isn't in the default trust store.
 const pool = new Pool({
   host: PGHOST,
   port: Number(PGPORT),
   user: PGUSER,
   password: PGPASSWORD,
   database: PGDATABASE,
-  ssl: PGSSLMODE === 'disable' ? false : { rejectUnauthorized: true },
+  ssl: PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false },
 });
 pool.on('error', (err) => console.error('Unexpected idle Postgres client error', err));
 
