@@ -236,11 +236,20 @@ app.patch('/api/sender-profiles/:id/active', requireAuth, async (req, res) => {
 
 const VALID_AUDIENCE_SEGMENTS = ['all_members', 'executive_committee', 'financial_members', 'custom'];
 const VALID_CHANNELS = ['email', 'whatsapp', 'sms'];
+const SMS_MAX_LENGTH = 160; // one GSM-7 SMS segment — longer splits into a costlier multi-part message
 
 app.post('/api/broadcast', requireAuth, async (req, res) => {
   const branchSlug = req.body.branch_slug || DEFAULT_BRANCH_SLUG;
-  const { sender_profile_id, audience_segment, channels, message_template, is_urgent, target_groups, target_member_ids } =
-    req.body || {};
+  const {
+    sender_profile_id,
+    audience_segment,
+    channels,
+    message_template,
+    is_urgent,
+    target_groups,
+    target_member_ids,
+    sms_message_template,
+  } = req.body || {};
 
   const errors = [];
   if (!sender_profile_id) errors.push('sender_profile_id is required');
@@ -257,6 +266,14 @@ app.post('/api/broadcast', requireAuth, async (req, res) => {
   const memberIds = Array.isArray(target_member_ids) ? target_member_ids.filter((id) => id) : [];
   if (audience_segment === 'custom' && groups.length === 0 && memberIds.length === 0) {
     errors.push('audience_segment "custom" requires at least one of target_groups or target_member_ids');
+  }
+  const smsMessage = typeof sms_message_template === 'string' ? sms_message_template.trim() : '';
+  if (Array.isArray(channels) && channels.includes('sms')) {
+    if (!smsMessage) {
+      errors.push('sms_message_template is required when the SMS channel is selected');
+    } else if (smsMessage.length > SMS_MAX_LENGTH) {
+      errors.push(`sms_message_template must be ${SMS_MAX_LENGTH} characters or fewer (got ${smsMessage.length})`);
+    }
   }
   if (errors.length > 0) {
     return res.status(400).json({ error: 'Validation failed', messages: errors });
@@ -281,7 +298,7 @@ app.post('/api/broadcast', requireAuth, async (req, res) => {
     // non-custom segments — matches 016_custom_contact_groups.sql's "null
     // for every non-custom broadcast" convention.
     const { rows } = await pool.query(
-      'SELECT * FROM create_broadcast($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+      'SELECT * FROM create_broadcast($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
       [
         branch.id,
         sender_profile_id,
@@ -292,6 +309,7 @@ app.post('/api/broadcast', requireAuth, async (req, res) => {
         req.session.username,
         audience_segment === 'custom' && groups.length > 0 ? groups : null,
         audience_segment === 'custom' && memberIds.length > 0 ? memberIds : null,
+        smsMessage || null,
       ]
     );
     res.status(201).json({ broadcast_id: rows[0].broadcast_id, status: rows[0].status });

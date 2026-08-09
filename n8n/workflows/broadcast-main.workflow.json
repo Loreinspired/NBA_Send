@@ -144,7 +144,7 @@
       "typeVersion": 2,
       "position": [1720, 400],
       "parameters": {
-        "jsCode": "const member = $json;\nconst broadcast = $('Claim Next Pending Broadcast').first().json;\nconst senderProfile = $('Fetch Sender Profile').first().json;\n\nfunction substitute(template, values) {\n  return template.replace(/\\{(\\w+)\\}/g, (match, key) => (key in values ? String(values[key]) : match));\n}\n\nconst values = {\n  First_Name: member.first_name,\n  Last_Name: member.last_name,\n  Amount_Due: member.amount_due != null ? member.amount_due : '',\n  Sender_Profile: senderProfile.display_name,\n};\n\nconst bodyText = substitute(broadcast.message_template, values);\nconst personalized_message = bodyText + (senderProfile.signature_block || '');\n\nreturn [{\n  json: {\n    ...member,\n    broadcast_id: broadcast.broadcast_id,\n    sender_profile_id: senderProfile.sender_profile_id,\n    sender_display_name: senderProfile.display_name,\n    sms_sender_id: senderProfile.sms_sender_id,\n    personalized_message,\n    personalized_message_html: personalized_message.replace(/\\n/g, '<br>'),\n  },\n}];"
+        "jsCode": "const member = $json;\nconst broadcast = $('Claim Next Pending Broadcast').first().json;\nconst senderProfile = $('Fetch Sender Profile').first().json;\n\nfunction substitute(template, values) {\n  return template.replace(/\\{(\\w+)\\}/g, (match, key) => (key in values ? String(values[key]) : match));\n}\n\nconst values = {\n  First_Name: member.first_name,\n  Last_Name: member.last_name,\n  Amount_Due: member.amount_due != null ? member.amount_due : '',\n  Sender_Profile: senderProfile.display_name,\n};\n\nconst bodyText = substitute(broadcast.message_template, values);\nconst personalized_message = bodyText + (senderProfile.signature_block || '');\n\n// SMS gets its own, separate body (admin-gui/server.js enforces it's set and\n// <=160 chars whenever the 'sms' channel is selected) — no signature_block\n// appended, since that would routinely blow the one-segment budget the\n// email/WhatsApp body isn't held to.\nconst personalized_message_sms = broadcast.sms_message_template\n  ? substitute(broadcast.sms_message_template, values)\n  : '';\n\nreturn [{\n  json: {\n    ...member,\n    broadcast_id: broadcast.broadcast_id,\n    sender_profile_id: senderProfile.sender_profile_id,\n    sender_display_name: senderProfile.display_name,\n    sms_sender_id: senderProfile.sms_sender_id,\n    personalized_message,\n    personalized_message_html: personalized_message.replace(/\\n/g, '<br>'),\n    personalized_message_sms,\n  },\n}];"
       }
     },
     {
@@ -279,7 +279,7 @@
         "authentication": "none",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {\n  \"email\": $env.MULTITEXTER_EMAIL,\n  \"password\": $env.MULTITEXTER_PASSWORD,\n  \"message\": $json.personalized_message,\n  \"sender_name\": $json.sms_sender_id,\n  \"recipients\": $json.phone_number.replace('+', ''),\n  \"forcednd\": $json.forcednd\n} }}",
+        "jsonBody": "={{ {\n  \"email\": $env.MULTITEXTER_EMAIL,\n  \"password\": $env.MULTITEXTER_PASSWORD,\n  \"message\": $json.personalized_message_sms,\n  \"sender_name\": $json.sms_sender_id,\n  \"recipients\": $json.phone_number.replace('+', ''),\n  \"forcednd\": $json.forcednd\n} }}",
         "options": {}
       }
     },

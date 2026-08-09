@@ -13,6 +13,10 @@ const broadcastResult = document.getElementById('broadcastResult');
 const senderProfileSelect = document.getElementById('senderProfile');
 const messageTemplate = document.getElementById('messageTemplate');
 const previewOutput = document.getElementById('previewOutput');
+const smsMessageFieldset = document.getElementById('smsMessageFieldset');
+const smsMessageTemplate = document.getElementById('smsMessageTemplate');
+const smsCharCount = document.getElementById('smsCharCount');
+const SMS_MAX_LENGTH = 160;
 
 const NAV_SECTIONS = {
   broadcastSection,
@@ -245,7 +249,7 @@ async function toggleSenderProfileActive(id, nextActive) {
   }
 }
 
-document.querySelectorAll('.token-btn').forEach((btn) => {
+document.querySelectorAll('.token-btn:not(.sms-token-btn)').forEach((btn) => {
   btn.addEventListener('click', () => {
     const token = btn.dataset.token;
     const start = messageTemplate.selectionStart ?? messageTemplate.value.length;
@@ -256,6 +260,36 @@ document.querySelectorAll('.token-btn').forEach((btn) => {
     messageTemplate.selectionStart = messageTemplate.selectionEnd = start + token.length;
     updatePreview();
   });
+});
+
+document.querySelectorAll('.sms-token-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const token = btn.dataset.token;
+    const start = smsMessageTemplate.selectionStart ?? smsMessageTemplate.value.length;
+    const end = smsMessageTemplate.selectionEnd ?? smsMessageTemplate.value.length;
+    const value = smsMessageTemplate.value;
+    smsMessageTemplate.value = value.slice(0, start) + token + value.slice(end);
+    smsMessageTemplate.focus();
+    smsMessageTemplate.selectionStart = smsMessageTemplate.selectionEnd = start + token.length;
+    updateSmsCharCount();
+  });
+});
+
+function updateSmsCharCount() {
+  const len = smsMessageTemplate.value.length;
+  smsCharCount.textContent = `${len} / ${SMS_MAX_LENGTH}`;
+  smsCharCount.classList.toggle('over-limit', len > SMS_MAX_LENGTH);
+}
+
+smsMessageTemplate.addEventListener('input', updateSmsCharCount);
+
+function updateSmsFieldsetVisibility() {
+  const smsChecked = document.querySelector('input[name="channel"][value="sms"]').checked;
+  smsMessageFieldset.classList.toggle('hidden', !smsChecked);
+}
+
+document.querySelectorAll('input[name="channel"]').forEach((cb) => {
+  cb.addEventListener('change', updateSmsFieldsetVisibility);
 });
 
 function updatePreview() {
@@ -271,11 +305,22 @@ messageTemplate.addEventListener('input', updatePreview);
 broadcastForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   broadcastResult.classList.add('hidden');
-  broadcastBtn.disabled = true;
-  broadcastBtn.textContent = 'Queuing…';
 
   const channels = Array.from(document.querySelectorAll('input[name="channel"]:checked')).map((c) => c.value);
   const audienceSegment = document.getElementById('audienceSegment').value;
+
+  if (channels.includes('sms')) {
+    const smsLen = smsMessageTemplate.value.trim().length;
+    if (smsLen === 0 || smsLen > SMS_MAX_LENGTH) {
+      broadcastResult.classList.remove('hidden');
+      broadcastResult.className = 'error';
+      broadcastResult.textContent = smsLen === 0
+        ? 'SMS Message is required when the SMS channel is selected.'
+        : `SMS Message must be ${SMS_MAX_LENGTH} characters or fewer (currently ${smsLen}).`;
+      return;
+    }
+  }
+
   const requestBody = {
     sender_profile_id: senderProfileSelect.value,
     audience_segment: audienceSegment,
@@ -283,10 +328,16 @@ broadcastForm.addEventListener('submit', async (e) => {
     message_template: messageTemplate.value,
     is_urgent: document.getElementById('isUrgent').checked,
   };
+  if (channels.includes('sms')) {
+    requestBody.sms_message_template = smsMessageTemplate.value.trim();
+  }
   if (audienceSegment === 'custom') {
     requestBody.target_groups = Array.from(document.querySelectorAll('input[name="targetGroup"]:checked')).map((c) => c.value);
     requestBody.target_member_ids = Array.from(document.querySelectorAll('input[name="targetMember"]:checked')).map((c) => c.value);
   }
+
+  broadcastBtn.disabled = true;
+  broadcastBtn.textContent = 'Queuing…';
 
   try {
     const res = await fetch('/api/broadcast', {

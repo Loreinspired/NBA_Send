@@ -22,6 +22,7 @@ migration framework, to keep the dependency surface minimal (only the stock
 - `migrations/016_custom_contact_groups.sql` – `members.custom_groups TEXT[]` (reusable free-form tags), `broadcasts.target_groups`/`target_member_ids`, and a new `'custom'` `audience_segment_enum` value, backing admin-gui's custom broadcast targeting
 - `migrations/017_custom_targeting_functions.sql` – extends `claim_next_pending_broadcast()`, `fetch_members_by_branch()`, and `create_broadcast()` to carry the fields added in 016 through the broadcast pipeline
 - `migrations/018_contact_management_functions.sql` – RLS-safe functions backing admin-gui's Contacts tab (`list_members`, `create_member`, `update_member`, `set_member_active`, `list_distinct_custom_groups`)
+- `migrations/019_sms_message_template.sql` – `broadcasts.sms_message_template` (a separate, shorter message body for SMS, since it's priced/rendered per 160-character segment unlike email/WhatsApp), and extends `claim_next_pending_broadcast()`/`create_broadcast()` to carry it
 
 ## Running migrations
 

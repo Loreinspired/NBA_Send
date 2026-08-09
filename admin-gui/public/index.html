@@ -78,7 +78,7 @@
           Urgent legal/emergency notice (bypasses SMS DND opt-outs)
         </label>
 
-        <label for="messageTemplate">4. Message Composer</label>
+        <label for="messageTemplate">4. Message Composer (Email / WhatsApp)</label>
         <div class="token-row">
           <span>Insert:</span>
           <button type="button" class="token-btn" data-token="{First_Name}">{First_Name}</button>
@@ -97,6 +97,17 @@ Regards,
           <h3>Preview (sample values — actual personalization happens per-member on send)</h3>
           <pre id="previewOutput"></pre>
         </div>
+
+        <fieldset id="smsMessageFieldset" class="hidden">
+          <legend>5. SMS Message (160 characters max — no signature appended)</legend>
+          <div class="token-row">
+            <span>Insert:</span>
+            <button type="button" class="token-btn sms-token-btn" data-token="{First_Name}">{First_Name}</button>
+            <button type="button" class="token-btn sms-token-btn" data-token="{Amount_Due}">{Amount_Due}</button>
+          </div>
+          <textarea id="smsMessageTemplate" rows="3" placeholder="Dear {First_Name}, your NBA dues of {Amount_Due} are outstanding. Reply for details."></textarea>
+          <div id="smsCharCount" class="char-count">0 / 160</div>
+        </fieldset>
 
         <button type="submit" id="broadcastBtn">Broadcast</button>
         <p id="broadcastResult" class="hidden"></p>
