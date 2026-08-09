@@ -493,9 +493,9 @@
         3160,
         640
       ],
-      "notes": "UNVERIFIED: Multitexter's public developer page (multitexter.com/developers) documents the request shape but not the response shape at all \u2014 no example success/error body is shown. The success/failure heuristic and provider_message_id field name below are best guesses; capture a real response from your account and correct this node before relying on delivery status (or on 'status' at all \u2014 it may need to default to 'sent' unconditionally if Multitexter doesn't return a clear indicator).",
+      "notes": "Response shape confirmed against a real send on 2026-08-08: {status: 1, msgid, units, balance, msg, messages: {\"<phone-without-plus>\": \"<per-recipient-message-id>\"}}. status is a NUMBER (1 = success); a failure shape wasn't observed (no failed send captured), so the ok-check falls back to treating any non-1 status as failure. If you hit a real failure response, capture it and tighten this further.",
       "parameters": {
-        "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = !(resp && (resp.error || resp.status === 'failed' || resp.success === false));\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'sms',\n    recipient_address: ctx.phone_number,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.message_id ?? resp?.id ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
+        "jsCode": "const resp = $json;\nconst ctx = $('Personalize Message').item.json;\nconst ok = !!(resp && resp.status === 1);\nconst phoneKey = ctx.phone_number.replace('+', '');\nreturn [{\n  json: {\n    member_id: ctx.member_id,\n    broadcast_id: ctx.broadcast_id,\n    branch_id: ctx.branch_id,\n    channel: 'sms',\n    recipient_address: ctx.phone_number,\n    status: ok ? 'sent' : 'failed',\n    provider_message_id: resp?.messages?.[phoneKey] ?? resp?.msgid ?? null,\n    error_detail: ok ? null : JSON.stringify(resp),\n  },\n}];"
       }
     },
     {

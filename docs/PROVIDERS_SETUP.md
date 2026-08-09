@@ -9,6 +9,23 @@ provider's publicly documented API; the response-shape parsing in the
 public docs didn't show a real example, and should be corrected against a
 real send before relying on delivery-status accuracy.
 
+## 0. Brevo IP allowlisting (do this before anything else works)
+
+Brevo blocks API calls from IP addresses it hasn't seen on your account
+before, returning `401 {"code":"unauthorized", "message":"...unrecognised
+IP address..."}` — confirmed by real test calls on 2026-08-08 from two
+different IPs, both blocked. This will block **both** ad-hoc testing (from
+wherever you run curl/Postman) **and** your production n8n instance once
+deployed, since a fresh Render/Railway/VPS deployment is also an
+"unrecognised" IP the first time it calls Brevo.
+
+Fix at **app.brevo.com/security/authorised_ips**: either add the specific
+IP(s) that will call the API, or turn the restriction off entirely.
+Because n8n's outbound IP can change across redeploys/restarts on
+platforms like Render (no static IP on the free tier), turning the
+restriction off is the more durable option unless you're running on
+infrastructure with a fixed egress IP (e.g. a VPS, Option B).
+
 ## 1. Brevo — email
 
 1. Sign up at brevo.com (free tier: 300 transactional emails/day, no card
@@ -53,12 +70,17 @@ use.** Switching to Brevo does not skip this step.
 ## 3. Multitexter — SMS
 
 1. Register an account at multitexter.com.
-2. Register the branch's alphanumeric Sender ID (e.g. `NBA-ADO`) — subject
-   to their approval process — then set it on the branch row:
+2. Register the branch's alphanumeric Sender ID (e.g. `NBA-ADO`) — then set
+   it on the branch row:
    ```sql
    UPDATE branches SET sms_sender_id = 'NBA-ADO' WHERE slug = 'ado-ekiti';
    ```
    (`db/migrations/008_seed_dev_data.sql` already seeds this for local dev.)
+   Confirmed by a real send on 2026-08-08: an unregistered-looking sender
+   name (`NBA-ADO`) was accepted without a separate visible approval step
+   — unlike Sendchamp, which rejected arbitrary sender names outright. This
+   doesn't guarantee no approval process exists for production traffic
+   volumes; it only confirms a single test send wasn't blocked.
 3. Set in `.env`:
    - `MULTITEXTER_EMAIL` / `MULTITEXTER_PASSWORD` — your account login.
      **Note the auth model**: unlike Brevo/Sendchamp, Multitexter
@@ -71,13 +93,18 @@ use.** Switching to Brevo does not skip this step.
    developer docs — no separate approval step was mentioned there, unlike
    Sendchamp's DND route, but confirm with Multitexter support if you rely
    on it for genuinely time-sensitive notices.
-5. **Multitexter's response shape for `/v2/app/sms` isn't documented
-   anywhere on their public developer page** — no example success or
-   error body is shown. The `Normalize Delivery Response (SMS)` node's
-   success/failure heuristic is a placeholder. Send one real SMS, inspect
-   the actual response n8n receives (via the execution log), and correct
-   that node's parsing — don't trust `message_log.status` for SMS until
-   you've done this.
+5. **Multitexter's response shape is now confirmed** by a real send:
+   ```json
+   {"status": 1, "msgid": "msg_...", "units": 4, "balance": "413.00",
+    "msg": "Message has been sent",
+    "messages": {"<phone-without-plus>": "<per-recipient-message-id>"}}
+   ```
+   `status: 1` (a number) signals success; `messages` maps each recipient
+   phone number (no leading `+`) to its own message ID, which is what
+   `Normalize Delivery Response (SMS)` now uses as `provider_message_id`.
+   A failure response wasn't captured (the test send succeeded), so the
+   success check is `status === 1`; tighten the failure branch if you
+   capture a real failed response.
 
 ## 4. Delivery-status callbacks (email only, optional)
 
